@@ -175,12 +175,12 @@ wipes everything and `Scene::replay()` bulk-copies from prev frame. The goal
 is a persistent scene that applies diffs.
 
 #### 1.1 Persistent Scene Structure
-- [ ] Remove `Scene::clear()` call from the frame cycle
-- [ ] Instead of clearing, maintain scene across frames
-- [ ] Each view's primitives are stored in a contiguous range
+- [x] Remove `Scene::clear()` call from the frame cycle
+- [x] Instead of clearing, maintain scene across frames
+- [x] Each view's primitives are stored in a contiguous range
   (they already are — `paint_operations` tracks ranges per view)
-- [ ] When a view is dirty: replace its range in the scene
-- [ ] When a view is clean: leave its range untouched (no replay/copy)
+- [x] When a view is dirty: replace its range in the scene
+- [x] When a view is clean: leave its range untouched (no replay/copy)
 
 **Key insight**: The current `Scene::replay(range, prev_scene)` copies
 primitives from rendered_frame to next_frame. If the scene is persistent,
@@ -193,12 +193,12 @@ clean views don't need ANY copy — their data is still there.
   scene ops entirely for clean views
 
 #### 1.2 Incremental Sort
-- [ ] `Scene::finish()` currently sorts ALL primitives by draw order
-- [ ] With persistent scene, maintain sorted order incrementally:
+- [x] `Scene::finish()` currently sorts ALL primitives by draw order
+- [x] With persistent scene, maintain sorted order incrementally:
   - When a view's range changes, re-sort only the affected region
   - Use insertion-based approach for small changes
   - Fall back to full sort if > 30% of scene changed
-- [ ] Track a `scene_generation: u64` counter incremented on changes
+- [x] Track a `scene_generation: u64` counter incremented on changes
 
 **Files to modify**:
 - `crates/gpui/src/scene.rs` — `finish()` → `update()` with partial sort

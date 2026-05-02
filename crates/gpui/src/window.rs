@@ -2846,12 +2846,19 @@ impl Window {
                 self.with_rendered_view(deferred_draw.current_view, |window| {
                     window.with_content_mask(content_mask, |window| {
                         window.with_rem_size(Some(deferred_draw.rem_size), |window| {
+                            window.begin_view_chunk(deferred_draw.current_view);
                             element.paint(window, cx);
+                            window.end_view_chunk();
                         });
                     })
                 })
             } else {
-                self.reuse_paint(deferred_draw.paint_range.clone());
+                self.begin_view_chunk(deferred_draw.current_view);
+                self.reuse_paint(
+                    deferred_draw.current_view,
+                    deferred_draw.paint_range.clone(),
+                );
+                self.end_view_chunk();
             }
             let paint_end = self.paint_index();
             deferred_draw.paint_range = paint_start..paint_end;
@@ -2941,7 +2948,15 @@ impl Window {
         }
     }
 
-    pub(crate) fn reuse_paint(&mut self, range: Range<PaintIndex>) {
+    pub(crate) fn begin_view_chunk(&mut self, view_id: EntityId) {
+        self.next_frame.scene.begin_view_chunk(view_id);
+    }
+
+    pub(crate) fn end_view_chunk(&mut self) {
+        self.next_frame.scene.end_view_chunk();
+    }
+
+    pub(crate) fn reuse_paint(&mut self, view_id: EntityId, range: Range<PaintIndex>) {
         self.next_frame.cursor_styles.extend(
             self.rendered_frame.cursor_styles
                 [range.start.cursor_styles_index..range.end.cursor_styles_index]
@@ -2973,6 +2988,7 @@ impl Window {
 
         self.text_system
             .reuse_layouts(range.start.line_layout_index..range.end.line_layout_index);
+        self.next_frame.scene.mark_chunk_clean(view_id);
         self.next_frame.scene.replay(
             range.start.scene_index..range.end.scene_index,
             &self.rendered_frame.scene,

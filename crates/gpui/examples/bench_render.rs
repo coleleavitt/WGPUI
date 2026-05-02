@@ -233,7 +233,9 @@ fn run_example() {
                     })
                     .detach();
                 }
-                Err(err) => eprintln!("failed to initialize bench_render keyboard shortcuts: {err}"),
+                Err(err) => {
+                    eprintln!("failed to initialize bench_render keyboard shortcuts: {err}")
+                }
             },
             Err(err) => eprintln!("failed to open bench_render window: {err}"),
         }

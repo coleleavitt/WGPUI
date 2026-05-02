@@ -83,6 +83,7 @@ resvg = { version = "0.45.0", default-features = false, features = [
     "memmap-fonts",
     "raster-images"
 ] }
+rustc-hash.workspace = true
 usvg = { version = "0.45.0", default-features = false }
 ttf-parser = "0.25"
 util_macros.workspace = true

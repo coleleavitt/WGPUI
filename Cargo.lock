@@ -2319,6 +2319,7 @@ dependencies = [
  "refineable",
  "regex",
  "resvg",
+ "rustc-hash 2.1.1",
  "scheduler",
  "schemars",
  "seahash",
