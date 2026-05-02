@@ -1,0 +1,1155 @@
+use crate::{
+    BackgroundExecutor, Capslock, DevicePixels, DummyKeyboardMapper, ForegroundExecutor,
+    KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton,
+    MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, Pixels, Platform, PlatformInput,
+    PlatformWindow as _, PriorityQueueReceiver, RunnableVariant, ScrollWheelEvent, Size,
+    platform::cross::{
+        dispatcher::{CrossEvent, Dispatcher},
+        keyboard::CrossKeyboardLayout,
+        render_context::WgpuContext,
+        text_system::CosmicTextSystem,
+        window::CrossWindow,
+    },
+    point,
+};
+
+#[cfg(target_os = "macos")]
+use winit::platform::macos::WindowAttributesExtMacOS;
+
+fn device_button_to_gpui(button: u32) -> Option<MouseButton> {
+    match button {
+        0 => Some(MouseButton::Left),
+        1 => Some(MouseButton::Right),
+        2 => Some(MouseButton::Middle),
+        3 => Some(MouseButton::Navigate(crate::NavigationDirection::Back)),
+        4 => Some(MouseButton::Navigate(crate::NavigationDirection::Forward)),
+        _ => None,
+    }
+}
+use anyhow::Result;
+use collections::FxHashMap;
+use std::{cell::Cell, rc::Rc, sync::Arc, time::Instant};
+use winit::event_loop::ActiveEventLoop;
+
+thread_local! {
+    static ACTIVE_CONTEXT: Cell<Option<(*const ActiveEventLoop, *mut AppState)>> = Cell::new(None);
+}
+
+// Helper to access the context
+fn with_active_context<R>(f: impl FnOnce(&ActiveEventLoop, &mut AppState) -> R) -> Option<R> {
+    ACTIVE_CONTEXT.with(|storage| {
+        let (loop_ptr, app_ptr) = storage.get()?;
+        // SAFETY: We strictly manage these pointers during winit callbacks
+        unsafe { Some(f(&*loop_ptr, &mut *app_ptr)) }
+    })
+}
+
+pub(crate) struct CrossPlatform {
+    background_executor: BackgroundExecutor,
+    foreground_executor: ForegroundExecutor,
+    text_system: Arc<CosmicTextSystem>,
+    wgpu_context: Arc<WgpuContext>,
+    main_rx: PriorityQueueReceiver<RunnableVariant>,
+    event_loop: Cell<Option<winit::event_loop::EventLoop<CrossEvent>>>,
+    event_loop_proxy: winit::event_loop::EventLoopProxy<CrossEvent>,
+    callbacks: PlatformCallbacks,
+}
+
+#[derive(Default)]
+struct PlatformCallbacks {
+    on_open_urls: Cell<Option<Box<dyn FnMut(Vec<String>)>>>,
+    on_quit: Cell<Option<Box<dyn FnMut()>>>,
+    on_reopen: Cell<Option<Box<dyn FnMut()>>>,
+    on_app_menu_action: Cell<Option<Box<dyn FnMut(&dyn crate::Action)>>>,
+    on_will_open_app_menu: Cell<Option<Box<dyn FnMut()>>>,
+    on_validate_app_menu_command: Cell<Option<Box<dyn FnMut(&dyn crate::Action) -> bool>>>,
+}
+
+struct AppState {
+    windows: FxHashMap<winit::window::WindowId, CrossWindow>,
+    on_finish_launching: Cell<Option<Box<dyn 'static + FnOnce()>>>,
+    main_rx: PriorityQueueReceiver<RunnableVariant>,
+    current_modifiers: Modifiers,
+    pressed_button: Option<MouseButton>,
+    click_state: ClickState,
+    hovered_window_id: Cell<Option<winit::window::WindowId>>,
+}
+
+struct ClickState {
+    last_button: MouseButton,
+    last_position: crate::Point<Pixels>,
+    last_time: Option<Instant>,
+    current_count: usize,
+}
+
+impl CrossPlatform {
+    pub fn new() -> Result<Self> {
+        let (main_tx, main_rx) = PriorityQueueReceiver::new();
+        let mut event_loop =
+            winit::event_loop::EventLoop::<CrossEvent>::with_user_event().build()?;
+        event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+        let event_loop_proxy = event_loop.create_proxy();
+
+        let dispatcher = Arc::new(Dispatcher::new(main_tx, event_loop_proxy.clone()));
+        let background_executor = BackgroundExecutor::new(dispatcher.clone());
+        let foreground_executor = ForegroundExecutor::new(dispatcher.clone());
+
+        Ok(Self {
+            background_executor,
+            foreground_executor,
+            text_system: Arc::new(CosmicTextSystem::new()),
+            wgpu_context: Arc::new(WgpuContext::new()?),
+            main_rx,
+            event_loop: Cell::new(Some(event_loop)),
+            event_loop_proxy,
+            callbacks: PlatformCallbacks::default(),
+        })
+    }
+}
+
+impl Platform for CrossPlatform {
+    fn background_executor(&self) -> BackgroundExecutor {
+        self.background_executor.clone()
+    }
+
+    fn foreground_executor(&self) -> ForegroundExecutor {
+        self.foreground_executor.clone()
+    }
+
+    fn text_system(&self) -> Arc<dyn crate::PlatformTextSystem> {
+        self.text_system.clone()
+    }
+
+    fn run(&self, on_finish_launching: Box<dyn 'static + FnOnce()>) {
+        let mut event_loop = self.event_loop.take().expect("App is already running");
+
+        let mut app_state = AppState {
+            windows: Default::default(),
+            on_finish_launching: Cell::new(Some(on_finish_launching)),
+            main_rx: self.main_rx.clone(),
+            current_modifiers: Modifiers::default(),
+            pressed_button: None,
+            click_state: ClickState {
+                last_button: MouseButton::Left,
+                last_position: point(Pixels(0.0), Pixels(0.0)),
+                last_time: None,
+                current_count: 0,
+            },
+            hovered_window_id: Cell::new(None),
+        };
+
+        event_loop
+            .run_app(&mut app_state)
+            .expect("Failed to run App");
+    }
+
+    fn quit(&self) {
+        // NOTE(mdeand): The event loop will exit when all windows are closed and there are no
+        // NOTE(mdeand): more events to process. For an explicit quit, we rely on winit's exit
+        // NOTE(mdeand): mechanism via the ActiveEventLoop.
+        with_active_context(|event_loop, _| {
+            event_loop.exit();
+        });
+    }
+
+    fn restart(&self, _binary_path: Option<std::path::PathBuf>) {
+        log::warn!("restart is not yet implemented on this platform");
+    }
+
+    fn activate(&self, _ignoring_other_apps: bool) {}
+
+    fn hide(&self) {
+        log::warn!("hide is not yet implemented on this platform");
+    }
+
+    fn hide_other_apps(&self) {
+        log::warn!("hide_other_apps is not yet implemented on this platform");
+    }
+
+    fn unhide_other_apps(&self) {
+        log::warn!("unhide_other_apps is not yet implemented on this platform");
+    }
+
+    fn displays(&self) -> Vec<Rc<dyn crate::PlatformDisplay>> {
+        // TODO(mdeand): Add support for multiple displays.
+        vec![]
+    }
+
+    fn primary_display(&self) -> Option<Rc<dyn crate::PlatformDisplay>> {
+        // TODO(mdeand): Add support for multiple displays and primary display.
+        None
+    }
+
+    fn active_window(&self) -> Option<crate::AnyWindowHandle> {
+        // TODO(mdeand): Add support for tracking active window.
+        None
+    }
+
+    fn open_window(
+        &self,
+        _handle: crate::AnyWindowHandle,
+        options: crate::WindowParams,
+    ) -> anyhow::Result<Box<dyn crate::PlatformWindow>> {
+        let window = CrossWindow::new(self.wgpu_context.clone(), self.event_loop_proxy.clone());
+
+        let success = with_active_context(|event_loop, app_state| {
+            let bounds = options.bounds;
+            let use_client_decorations = matches!(
+                options.window_decorations,
+                Some(crate::WindowDecorations::Client)
+            );
+            let mut attributes = winit::window::Window::default_attributes()
+                .with_title(
+                    options
+                        .titlebar
+                        .as_ref()
+                        .and_then(|t| t.title.as_ref())
+                        .map(|t| t.to_string())
+                        .unwrap_or_else(|| "GPUI".into()),
+                )
+                .with_decorations(!use_client_decorations)
+                .with_resizable(options.is_resizable)
+                .with_inner_size(winit::dpi::LogicalSize::new(
+                    bounds.size.width.0 as f64,
+                    bounds.size.height.0 as f64,
+                ));
+
+            if let Some(min_size) = options.window_min_size {
+                attributes = attributes.with_min_inner_size(winit::dpi::LogicalSize::new(
+                    min_size.width.0 as f64,
+                    min_size.height.0 as f64,
+                ));
+            }
+
+            // Set the window/application icon when one is provided.
+            // On Windows this controls the titlebar + taskbar icon.
+            // On macOS, winit only sets the minimised-window thumbnail;
+            // we explicitly call `NSApp setApplicationIconImage:` below.
+            if let Some(ref icon) = options.app_icon {
+                match winit::window::Icon::from_rgba(icon.rgba.clone(), icon.width, icon.height) {
+                    Ok(winit_icon) => attributes = attributes.with_window_icon(Some(winit_icon)),
+                    Err(err) => log::warn!("Failed to set window icon: {err}"),
+                }
+            }
+
+            // macOS Dock icon — must be set via NSApp, not winit.
+            #[cfg(target_os = "macos")]
+            if let Some(ref icon) = options.app_icon {
+                set_macos_dock_icon(icon);
+            }
+
+            #[cfg(target_os = "macos")]
+            if use_client_decorations {
+                let appears_transparent = options
+                    .titlebar
+                    .as_ref()
+                    .map(|t| t.appears_transparent)
+                    .unwrap_or(true);
+                attributes = attributes
+                    .with_decorations(true)
+                    .with_title_hidden(true)
+                    .with_titlebar_transparent(appears_transparent)
+                    .with_fullsize_content_view(true);
+            }
+
+            let winit_window = event_loop
+                .create_window(attributes)
+                .expect("Failed to create window");
+            let window_id = winit_window.id();
+
+            window.initialize(winit_window);
+            app_state.windows.insert(window_id, window.clone());
+            window.window().request_redraw();
+        })
+        .is_some();
+
+        if !success {
+            anyhow::bail!("open_window called outside of main thread event loop");
+        }
+
+        Ok(Box::new(window))
+    }
+
+    fn window_appearance(&self) -> crate::WindowAppearance {
+        crate::WindowAppearance::default()
+    }
+
+    fn open_url(&self, _url: &str) {
+        log::warn!("open_url is not yet implemented on this platform");
+    }
+
+    fn on_open_urls(&self, callback: Box<dyn FnMut(Vec<String>)>) {
+        self.callbacks.on_open_urls.set(Some(callback));
+    }
+
+    fn register_url_scheme(&self, _url: &str) -> crate::Task<anyhow::Result<()>> {
+        crate::Task::ready(Err(anyhow::anyhow!(
+            "register_url_scheme is not yet implemented on this platform"
+        )))
+    }
+
+    fn prompt_for_paths(
+        &self,
+        _options: crate::PathPromptOptions,
+    ) -> futures::channel::oneshot::Receiver<anyhow::Result<Option<Vec<std::path::PathBuf>>>> {
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        let _ = sender.send(Ok(None));
+        receiver
+    }
+
+    fn prompt_for_new_path(
+        &self,
+        _directory: &std::path::Path,
+        _suggested_name: Option<&str>,
+    ) -> futures::channel::oneshot::Receiver<anyhow::Result<Option<std::path::PathBuf>>> {
+        let (sender, receiver) = futures::channel::oneshot::channel();
+        let _ = sender.send(Ok(None));
+        receiver
+    }
+
+    fn can_select_mixed_files_and_dirs(&self) -> bool {
+        false
+    }
+
+    fn reveal_path(&self, _path: &std::path::Path) {
+        log::warn!("reveal_path is not yet implemented on this platform");
+    }
+
+    fn open_with_system(&self, _path: &std::path::Path) {
+        log::warn!("open_with_system is not yet implemented on this platform");
+    }
+
+    fn on_quit(&self, callback: Box<dyn FnMut()>) {
+        self.callbacks.on_quit.set(Some(callback));
+    }
+
+    fn on_reopen(&self, callback: Box<dyn FnMut()>) {
+        self.callbacks.on_reopen.set(Some(callback));
+    }
+
+    fn set_menus(&self, _menus: Vec<crate::Menu>, _keymap: &crate::Keymap) {}
+
+    fn set_dock_menu(&self, _menu: Vec<crate::MenuItem>, _keymap: &crate::Keymap) {}
+
+    fn on_app_menu_action(&self, callback: Box<dyn FnMut(&dyn crate::Action)>) {
+        self.callbacks.on_app_menu_action.set(Some(callback));
+    }
+
+    fn on_will_open_app_menu(&self, callback: Box<dyn FnMut()>) {
+        self.callbacks.on_will_open_app_menu.set(Some(callback));
+    }
+
+    fn on_validate_app_menu_command(&self, callback: Box<dyn FnMut(&dyn crate::Action) -> bool>) {
+        self.callbacks
+            .on_validate_app_menu_command
+            .set(Some(callback));
+    }
+
+    fn app_path(&self) -> anyhow::Result<std::path::PathBuf> {
+        Ok(std::env::current_exe()?)
+    }
+
+    fn path_for_auxiliary_executable(&self, _name: &str) -> anyhow::Result<std::path::PathBuf> {
+        Err(anyhow::anyhow!(
+            "path_for_auxiliary_executable is not yet implemented on this platform"
+        ))
+    }
+
+    fn set_cursor_style(&self, style: crate::CursorStyle) {
+        use winit::window::CursorIcon;
+        let icon = match style {
+            crate::CursorStyle::Arrow => CursorIcon::Default,
+            crate::CursorStyle::IBeam => CursorIcon::Text,
+            crate::CursorStyle::Crosshair => CursorIcon::Crosshair,
+            crate::CursorStyle::ClosedHand => CursorIcon::Grabbing,
+            crate::CursorStyle::OpenHand => CursorIcon::Grab,
+            crate::CursorStyle::PointingHand => CursorIcon::Pointer,
+            crate::CursorStyle::ResizeLeft => CursorIcon::WResize,
+            crate::CursorStyle::ResizeRight => CursorIcon::EResize,
+            crate::CursorStyle::ResizeLeftRight => CursorIcon::EwResize,
+            crate::CursorStyle::ResizeUp => CursorIcon::NResize,
+            crate::CursorStyle::ResizeDown => CursorIcon::SResize,
+            crate::CursorStyle::ResizeUpDown => CursorIcon::NsResize,
+            crate::CursorStyle::ResizeUpLeftDownRight => CursorIcon::NwseResize,
+            crate::CursorStyle::ResizeUpRightDownLeft => CursorIcon::NeswResize,
+            crate::CursorStyle::ResizeColumn => CursorIcon::ColResize,
+            crate::CursorStyle::ResizeRow => CursorIcon::RowResize,
+            crate::CursorStyle::IBeamCursorForVerticalLayout => CursorIcon::VerticalText,
+            crate::CursorStyle::DragLink => CursorIcon::Alias,
+            crate::CursorStyle::DragCopy => CursorIcon::Copy,
+            crate::CursorStyle::ContextualMenu => CursorIcon::ContextMenu,
+            crate::CursorStyle::OperationNotAllowed => CursorIcon::NotAllowed,
+            crate::CursorStyle::None => {
+                with_active_context(|_, app_state| {
+                    if let Some(wid) = app_state.hovered_window_id.get() {
+                        if let Some(window) = app_state.windows.get(&wid) {
+                            window.window().set_cursor_visible(false);
+                        }
+                    }
+                });
+                return;
+            }
+        };
+        with_active_context(|_, app_state| {
+            if let Some(wid) = app_state.hovered_window_id.get() {
+                if let Some(window) = app_state.windows.get(&wid) {
+                    window.window().set_cursor_visible(true);
+                    window.window().set_cursor(icon);
+                }
+            }
+        });
+    }
+
+    fn should_auto_hide_scrollbars(&self) -> bool {
+        // TODO(mdeand): How do we want to implement this? For now, just return false.
+        false
+    }
+
+    fn write_to_clipboard(&self, _item: crate::ClipboardItem) {
+        log::warn!("write_to_clipboard is not yet implemented on this platform");
+    }
+
+    fn read_from_clipboard(&self) -> Option<crate::ClipboardItem> {
+        None
+    }
+
+    fn write_credentials(
+        &self,
+        _url: &str,
+        _username: &str,
+        _password: &[u8],
+    ) -> crate::Task<anyhow::Result<()>> {
+        crate::Task::ready(Err(anyhow::anyhow!(
+            "write_credentials is not yet implemented on this platform"
+        )))
+    }
+
+    fn read_credentials(
+        &self,
+        _url: &str,
+    ) -> crate::Task<anyhow::Result<Option<(String, Vec<u8>)>>> {
+        crate::Task::ready(Err(anyhow::anyhow!(
+            "read_credentials is not yet implemented on this platform"
+        )))
+    }
+
+    fn delete_credentials(&self, _url: &str) -> crate::Task<anyhow::Result<()>> {
+        crate::Task::ready(Err(anyhow::anyhow!(
+            "delete_credentials is not yet implemented on this platform"
+        )))
+    }
+
+    fn keyboard_layout(&self) -> Box<dyn crate::PlatformKeyboardLayout> {
+        Box::new(CrossKeyboardLayout)
+    }
+
+    fn keyboard_mapper(&self) -> Rc<dyn crate::PlatformKeyboardMapper> {
+        Rc::new(DummyKeyboardMapper)
+    }
+
+    fn on_keyboard_layout_change(&self, _callback: Box<dyn FnMut()>) {
+        // TODO(mdeand): Is this possible to implement in a cross-platform way?
+    }
+}
+
+impl AppState {
+    fn set_active_context(&mut self, event_loop: &ActiveEventLoop) {
+        ACTIVE_CONTEXT.with(|s| s.set(Some((event_loop as *const _, self as *mut _))));
+    }
+
+    fn clear_active_context(&self) {
+        ACTIVE_CONTEXT.with(|s| s.set(None));
+    }
+
+    fn drain_main_queue(&mut self) {
+        while let Ok(Some(runnable)) = self.main_rx.try_pop() {
+            match runnable {
+                RunnableVariant::Compat(runnable) => {
+                    runnable.run();
+                }
+                RunnableVariant::Meta(runnable) => {
+                    runnable.run();
+                }
+            }
+        }
+    }
+}
+
+impl winit::application::ApplicationHandler<CrossEvent> for AppState {
+    fn new_events(&mut self, _event_loop: &ActiveEventLoop, _cause: winit::event::StartCause) {}
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: CrossEvent) {
+        self.set_active_context(event_loop);
+
+        match event {
+            CrossEvent::WakeUp => {
+                self.drain_main_queue();
+            }
+            CrossEvent::SurfacePresent(window_id) => {
+                if let Some(window) = self.windows.get(&window_id) {
+                    window.window().request_redraw();
+                }
+            }
+            CrossEvent::CloseWindow(window_id) => {
+                // Programmatic close: remove from platform map so the winit
+                // window is dropped and the OS window actually disappears.
+                self.windows.remove(&window_id);
+            }
+        }
+
+        self.clear_active_context();
+    }
+
+    fn device_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) {
+        if let winit::event::DeviceEvent::Button { button, state } = event {
+            if let Some(mouse_button) = device_button_to_gpui(button) {
+                if std::env::var_os("GPUI_DEBUG_MOUSE").is_some() {
+                    eprintln!(
+                        "[WGPUI] DeviceEvent Button {} {:?} pressed_button={:?}",
+                        button,
+                        state,
+                        self.pressed_button
+                    );
+                }
+
+                match state {
+                    winit::event::ElementState::Pressed => {
+                        self.pressed_button = Some(mouse_button);
+                    }
+                    winit::event::ElementState::Released => {
+                        if self.pressed_button == Some(mouse_button) {
+                            self.pressed_button = None;
+
+                            // TODO: This is a fallback for macOS when WindowEvent::MouseInput
+                            // release notifications are not delivered reliably. In an ideal fix,
+                            // we would avoid synthesizing MouseUp from raw device events and instead
+                            // make the normal winit event path complete correctly.
+                            //
+                            // IMPORTANT: set_active_context must be called here so that any
+                            // cx.open_window() calls triggered by the click handler have a valid
+                            // event loop reference (without it they silently fail).
+                            self.set_active_context(event_loop);
+                            if let Some(window_id) = self.hovered_window_id.get() {
+                                if let Some(window) = self.windows.get(&window_id) {
+                                    let position = window.0.state.mouse_position.get();
+                                    let modifiers = self.current_modifiers;
+                                    let platform_event = PlatformInput::MouseUp(MouseUpEvent {
+                                        button: mouse_button,
+                                        position,
+                                        modifiers,
+                                        click_count: self.click_state.current_count,
+                                    });
+                                    window.0.state.callbacks.invoke_mut(
+                                        &window.0.state.callbacks.on_input,
+                                        |cb| {
+                                            cb(platform_event.clone());
+                                        },
+                                    );
+                                }
+                            }
+                            self.clear_active_context();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.set_active_context(event_loop);
+
+        self.drain_main_queue();
+
+        for window in self.windows.values() {
+            window.window().request_redraw();
+        }
+
+        self.clear_active_context();
+    }
+
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {}
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {}
+
+    fn memory_warning(&mut self, _event_loop: &ActiveEventLoop) {}
+
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        self.set_active_context(event_loop);
+
+        if let Some(on_finish_launching) = self.on_finish_launching.take() {
+            on_finish_launching();
+        }
+
+        self.clear_active_context();
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: winit::window::WindowId,
+        event: winit::event::WindowEvent,
+    ) {
+        self.set_active_context(event_loop);
+
+        let Some(window) = self.windows.get(&window_id) else {
+            return;
+        };
+
+        match event {
+            winit::event::WindowEvent::Resized(physical_size) => {
+                if physical_size.width == 0 || physical_size.height == 0 {
+                    return;
+                }
+
+                window.0.state.resize_detector.on_resize_event();
+                window.window().request_redraw();
+                let scale_factor = window.scale_factor();
+
+                if let Some(renderer) = window.0.renderer.get() {
+                    renderer.borrow_mut().update_drawable_size(Size {
+                        width: DevicePixels(physical_size.width as i32),
+                        height: DevicePixels(physical_size.height as i32),
+                    });
+                }
+                let size = crate::Size {
+                    width: crate::Pixels(physical_size.width as f32 / scale_factor),
+                    height: crate::Pixels(physical_size.height as f32 / scale_factor),
+                };
+
+                window
+                    .0
+                    .state
+                    .callbacks
+                    .invoke_mut(&window.0.state.callbacks.on_resize, |cb| {
+                        cb(size, scale_factor);
+                    });
+            }
+
+            winit::event::WindowEvent::Moved(_) => {
+                window
+                    .0
+                    .state
+                    .callbacks
+                    .invoke_mut(&window.0.state.callbacks.on_moved, |cb| {
+                        cb();
+                    });
+            }
+
+            winit::event::WindowEvent::Focused(active) => {
+                window
+                    .0
+                    .state
+                    .callbacks
+                    .invoke_mut(&window.0.state.callbacks.on_active_status_change, |cb| {
+                        cb(active)
+                    });
+            }
+
+            winit::event::WindowEvent::ThemeChanged(_) => {
+                window
+                    .0
+                    .state
+                    .callbacks
+                    .invoke_mut(&window.0.state.callbacks.on_appearance_changed, |cb| cb());
+            }
+
+            winit::event::WindowEvent::CloseRequested => {
+                let should_close = window
+                    .0
+                    .state
+                    .callbacks
+                    .on_should_close
+                    .take()
+                    .map(|mut cb| {
+                        let result = cb();
+                        window.0.state.callbacks.on_should_close.set(Some(cb));
+                        result
+                    })
+                    .unwrap_or(true);
+
+                if should_close {
+                    if let Some(cb) = window.0.state.callbacks.on_close.take() {
+                        cb();
+                    }
+                    self.windows.remove(&window_id);
+                }
+            }
+
+            winit::event::WindowEvent::RedrawRequested => {
+                let physical_size = window.window().inner_size();
+                if physical_size.width == 0 || physical_size.height == 0 {
+                    return;
+                }
+
+                // Try fast blit path for pending surfaces
+                let mut fast_blit_succeeded = false;
+                if let Some(renderer) = window.0.renderer.get() {
+                    let renderer_ref = renderer.borrow();
+                    // Get all pending surfaces from the registry
+                    if let Some(pending_surfaces) = renderer_ref.get_pending_surfaces() {
+                        for surface_id in pending_surfaces {
+                            if renderer_ref.blit_surface_direct(surface_id) {
+                                fast_blit_succeeded = true;
+                            }
+                        }
+                    }
+                }
+
+                window.0.state.callbacks.invoke_mut(
+                    &window.0.state.callbacks.on_request_frame,
+                    |cb| {
+                        cb(crate::RequestFrameOptions {
+                            // Only force compositor if fast blit failed
+                            force_render: !fast_blit_succeeded,
+                            require_presentation: true,
+                        });
+                    },
+                );
+            }
+
+            winit::event::WindowEvent::KeyboardInput {
+                event:
+                    winit::event::KeyEvent {
+                        logical_key,
+                        state,
+                        text,
+                        repeat,
+                        ..
+                    },
+                ..
+            } => {
+                let modifiers = self.current_modifiers;
+
+                if let Some(keystroke) = winit_key_to_keystroke(&logical_key, modifiers, &text) {
+                    let platform_event = match state {
+                        winit::event::ElementState::Pressed => {
+                            PlatformInput::KeyDown(KeyDownEvent {
+                                keystroke,
+                                is_held: repeat,
+                                prefer_character_input: false,
+                            })
+                        }
+                        winit::event::ElementState::Released => {
+                            PlatformInput::KeyUp(KeyUpEvent { keystroke })
+                        }
+                    };
+
+                    window
+                        .0
+                        .state
+                        .callbacks
+                        .invoke_mut(&window.0.state.callbacks.on_input, |cb| {
+                            cb(platform_event.clone());
+                        });
+                }
+            }
+
+            winit::event::WindowEvent::ModifiersChanged(new_modifiers) => {
+                let modifiers = winit_modifiers_to_gpui(new_modifiers.state());
+                self.current_modifiers = modifiers;
+
+                window.0.state.modifiers.set(modifiers);
+
+                let platform_event = PlatformInput::ModifiersChanged(ModifiersChangedEvent {
+                    modifiers,
+                    capslock: Capslock::default(),
+                });
+
+                window
+                    .0
+                    .state
+                    .callbacks
+                    .invoke_mut(&window.0.state.callbacks.on_input, |cb| {
+                        cb(platform_event.clone());
+                    });
+            }
+
+            winit::event::WindowEvent::CursorEntered { .. } => {
+                self.hovered_window_id.set(Some(window_id));
+                let was_hovered = window.0.state.is_hovered.get();
+                window.0.state.is_hovered.set(true);
+                if !was_hovered {
+                    window
+                        .0
+                        .state
+                        .callbacks
+                        .invoke_mut(&window.0.state.callbacks.on_hover_status_change, |cb| {
+                            cb(true);
+                        });
+                }
+            }
+            winit::event::WindowEvent::CursorMoved { position, .. } => {
+                self.hovered_window_id.set(Some(window_id));
+                let was_hovered = window.0.state.is_hovered.get();
+                window.0.state.is_hovered.set(true);
+                if !was_hovered {
+                    window
+                        .0
+                        .state
+                        .callbacks
+                        .invoke_mut(&window.0.state.callbacks.on_hover_status_change, |cb| {
+                            cb(true);
+                        });
+                }
+                let scale_factor = window.scale_factor();
+                let position = point(
+                    Pixels(position.x as f32 / scale_factor),
+                    Pixels(position.y as f32 / scale_factor),
+                );
+
+                window.0.state.mouse_position.set(position);
+
+                let platform_event = PlatformInput::MouseMove(MouseMoveEvent {
+                    position,
+                    pressed_button: self.pressed_button,
+                    modifiers: self.current_modifiers,
+                });
+
+                window
+                    .0
+                    .state
+                    .callbacks
+                    .invoke_mut(&window.0.state.callbacks.on_input, |cb| {
+                        cb(platform_event.clone());
+                    });
+            }
+
+            winit::event::WindowEvent::CursorLeft { .. } => {
+                self.hovered_window_id.set(None);
+                window.0.state.is_hovered.set(false);
+                window
+                    .0
+                    .state
+                    .callbacks
+                    .invoke_mut(&window.0.state.callbacks.on_hover_status_change, |cb| {
+                        cb(false);
+                    });
+                let position = window.0.state.mouse_position.get();
+                let platform_event = PlatformInput::MouseExited(MouseExitEvent {
+                    position,
+                    pressed_button: self.pressed_button,
+                    modifiers: self.current_modifiers,
+                });
+
+                window
+                    .0
+                    .state
+                    .callbacks
+                    .invoke_mut(&window.0.state.callbacks.on_input, |cb| {
+                        cb(platform_event.clone());
+                    });
+            }
+
+            winit::event::WindowEvent::MouseInput { state, button, .. } => {
+                let position = window.0.state.mouse_position.get();
+                let mouse_button = winit_mouse_button_to_gpui(button);
+                let modifiers = self.current_modifiers;
+
+                if std::env::var_os("GPUI_DEBUG_MOUSE").is_some() {
+                    eprintln!(
+                        "[WGPUI] macOS MouseInput {:?} {:?} @ {:?} hovered={} pressed_button={:?}",
+                        state,
+                        button,
+                        position,
+                        window.0.state.is_hovered.get(),
+                        self.pressed_button,
+                    );
+                }
+
+                match state {
+                    winit::event::ElementState::Pressed => {
+                        self.pressed_button = Some(mouse_button);
+
+                        let click_count =
+                            self.click_state
+                                .update(mouse_button, position, Instant::now());
+
+                        let platform_event = PlatformInput::MouseDown(MouseDownEvent {
+                            button: mouse_button,
+                            position,
+                            modifiers,
+                            click_count,
+                            first_mouse: false,
+                        });
+
+                        window.0.state.callbacks.invoke_mut(
+                            &window.0.state.callbacks.on_input,
+                            |cb| {
+                                cb(platform_event.clone());
+                            },
+                        );
+                    }
+                    winit::event::ElementState::Released => {
+                        self.pressed_button = None;
+                        if mouse_button == MouseButton::Left {
+                            window.window().request_redraw();
+                        }
+
+                        let platform_event = PlatformInput::MouseUp(MouseUpEvent {
+                            button: mouse_button,
+                            position,
+                            modifiers,
+                            click_count: self.click_state.current_count,
+                        });
+
+                        window.0.state.callbacks.invoke_mut(
+                            &window.0.state.callbacks.on_input,
+                            |cb| {
+                                cb(platform_event.clone());
+                            },
+                        );
+                    }
+                }
+            }
+
+            winit::event::WindowEvent::MouseWheel { delta, phase, .. } => {
+                let position = window.0.state.mouse_position.get();
+                let modifiers = self.current_modifiers;
+
+                let scroll_delta = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(x, y) => {
+                        crate::ScrollDelta::Lines(point(x, y))
+                    }
+                    winit::event::MouseScrollDelta::PixelDelta(delta) => {
+                        let scale_factor = window.scale_factor();
+                        crate::ScrollDelta::Pixels(point(
+                            Pixels(delta.x as f32 / scale_factor),
+                            Pixels(delta.y as f32 / scale_factor),
+                        ))
+                    }
+                };
+
+                let touch_phase = match phase {
+                    winit::event::TouchPhase::Started => crate::TouchPhase::Started,
+                    winit::event::TouchPhase::Moved => crate::TouchPhase::Moved,
+                    winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
+                        crate::TouchPhase::Ended
+                    }
+                };
+
+                let platform_event = PlatformInput::ScrollWheel(ScrollWheelEvent {
+                    position,
+                    delta: scroll_delta,
+                    modifiers,
+                    touch_phase,
+                });
+
+                window
+                    .0
+                    .state
+                    .callbacks
+                    .invoke_mut(&window.0.state.callbacks.on_input, |cb| {
+                        cb(platform_event.clone());
+                    });
+            }
+
+            _ => (),
+        }
+
+        self.clear_active_context();
+    }
+}
+
+const DOUBLE_CLICK_THRESHOLD_MS: u128 = 500;
+const DOUBLE_CLICK_DISTANCE: f32 = 5.0;
+
+impl ClickState {
+    fn update(
+        &mut self,
+        button: MouseButton,
+        position: crate::Point<Pixels>,
+        now: Instant,
+    ) -> usize {
+        let is_same_button = self.last_button == button;
+        let is_within_time = self
+            .last_time
+            .map(|t| now.duration_since(t).as_millis() < DOUBLE_CLICK_THRESHOLD_MS)
+            .unwrap_or(false);
+        let distance = ((position.x - self.last_position.x).0.powi(2)
+            + (position.y - self.last_position.y).0.powi(2))
+        .sqrt();
+        let is_within_distance = distance < DOUBLE_CLICK_DISTANCE;
+
+        if is_same_button && is_within_time && is_within_distance {
+            self.current_count += 1;
+        } else {
+            self.current_count = 1;
+        }
+
+        self.last_button = button;
+        self.last_position = position;
+        self.last_time = Some(now);
+
+        self.current_count
+    }
+}
+
+fn winit_modifiers_to_gpui(modifiers: winit::keyboard::ModifiersState) -> Modifiers {
+    Modifiers {
+        control: modifiers.control_key(),
+        alt: modifiers.alt_key(),
+        shift: modifiers.shift_key(),
+        platform: modifiers.super_key(),
+        function: false,
+    }
+}
+
+fn winit_mouse_button_to_gpui(button: winit::event::MouseButton) -> MouseButton {
+    match button {
+        winit::event::MouseButton::Left => MouseButton::Left,
+        winit::event::MouseButton::Right => MouseButton::Right,
+        winit::event::MouseButton::Middle => MouseButton::Middle,
+        winit::event::MouseButton::Back => MouseButton::Navigate(crate::NavigationDirection::Back),
+        winit::event::MouseButton::Forward => {
+            MouseButton::Navigate(crate::NavigationDirection::Forward)
+        }
+        winit::event::MouseButton::Other(_) => MouseButton::Left,
+    }
+}
+
+fn winit_key_to_keystroke(
+    logical_key: &winit::keyboard::Key,
+    modifiers: Modifiers,
+    text: &Option<winit::keyboard::SmolStr>,
+) -> Option<Keystroke> {
+    use winit::keyboard::Key as WKey;
+    use winit::keyboard::NamedKey;
+
+    let (key, key_char) = match logical_key {
+        WKey::Named(named) => {
+            let key_name = match named {
+                NamedKey::Backspace => "backspace",
+                NamedKey::Tab => "tab",
+                NamedKey::Enter => "enter",
+                NamedKey::Escape => "escape",
+                NamedKey::Space => "space",
+                NamedKey::ArrowLeft => "left",
+                NamedKey::ArrowRight => "right",
+                NamedKey::ArrowUp => "up",
+                NamedKey::ArrowDown => "down",
+                NamedKey::Home => "home",
+                NamedKey::End => "end",
+                NamedKey::PageUp => "pageup",
+                NamedKey::PageDown => "pagedown",
+                NamedKey::Insert => "insert",
+                NamedKey::Delete => "delete",
+                NamedKey::F1 => "f1",
+                NamedKey::F2 => "f2",
+                NamedKey::F3 => "f3",
+                NamedKey::F4 => "f4",
+                NamedKey::F5 => "f5",
+                NamedKey::F6 => "f6",
+                NamedKey::F7 => "f7",
+                NamedKey::F8 => "f8",
+                NamedKey::F9 => "f9",
+                NamedKey::F10 => "f10",
+                NamedKey::F11 => "f11",
+                NamedKey::F12 => "f12",
+                NamedKey::BrowserBack => "back",
+                NamedKey::BrowserForward => "forward",
+                // Modifier-only keys don't produce keystrokes by themselves
+                NamedKey::Shift
+                | NamedKey::Control
+                | NamedKey::Alt
+                | NamedKey::Super
+                | NamedKey::Meta => return None,
+                _ => return None,
+            };
+            (key_name.to_string(), None)
+        }
+        WKey::Character(ch) => {
+            let key = ch.to_lowercase();
+            let key_char = text.as_ref().map(|t| t.to_string()).or_else(|| {
+                if !modifiers.control
+                    && !modifiers.platform
+                    && !modifiers.function
+                    && !modifiers.alt
+                {
+                    if modifiers.shift {
+                        Some(ch.to_uppercase().to_string())
+                    } else {
+                        Some(ch.to_string())
+                    }
+                } else {
+                    None
+                }
+            });
+            (key, key_char)
+        }
+        WKey::Unidentified(_) | WKey::Dead(_) => return None,
+    };
+
+    Some(Keystroke {
+        modifiers,
+        key,
+        key_char,
+    })
+}
+
+/// Set the macOS application Dock icon by calling `NSApp setApplicationIconImage:`.
+///
+/// `winit`'s `with_window_icon` only sets the per-window miniaturised thumbnail
+/// (shown in the Dock when *that specific window* is minimised). To change the
+/// live Dock tile for the running process — which is what users see as the "app
+/// icon" — we must call `[NSApp setApplicationIconImage:]` directly.
+///
+/// This is a no-op on all other platforms (the cfg gate in the call site ensures
+/// this function is never compiled in non-macOS builds).
+#[cfg(target_os = "macos")]
+fn set_macos_dock_icon(icon: &crate::WindowIcon) {
+    use image::{ImageBuffer, Rgba, imageops};
+    use objc2::ClassType;
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::{MainThreadMarker, NSData};
+
+    // macOS Dock icons are capped at 512×512 (1024×1024 @2×).
+    // If we hand NSImage a larger image it reports a bigger "natural size"
+    // and the Dock renders the tile bigger than every other app icon.
+    const MAX_DOCK_ICON_PX: u32 = 512;
+
+    let Some(buf) = ImageBuffer::<Rgba<u8>, _>::from_raw(
+        icon.width,
+        icon.height,
+        icon.rgba.clone(),
+    ) else {
+        log::warn!("set_macos_dock_icon: icon dimensions don't match pixel buffer");
+        return;
+    };
+
+    // Downscale only if the image is larger than the Dock cap.
+    let buf = if icon.width > MAX_DOCK_ICON_PX || icon.height > MAX_DOCK_ICON_PX {
+        imageops::resize(&buf, MAX_DOCK_ICON_PX, MAX_DOCK_ICON_PX, imageops::FilterType::Lanczos3)
+    } else {
+        buf
+    };
+
+    let mut png: Vec<u8> = Vec::new();
+    if buf
+        .write_to(
+            &mut std::io::Cursor::new(&mut png),
+            image::ImageFormat::Png,
+        )
+        .is_err()
+    {
+        log::warn!("set_macos_dock_icon: failed to encode icon as PNG");
+        return;
+    }
+
+    // SAFETY: `open_window` (our only call site) is always invoked on the main
+    // thread, which is the only thread on which AppKit objects may be used.
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    unsafe {
+        let data = NSData::with_bytes(&png);
+        if let Some(ns_image) = NSImage::initWithData(NSImage::alloc(), &data) {
+            let app = NSApplication::sharedApplication(mtm);
+            app.setApplicationIconImage(Some(&ns_image));
+        } else {
+            log::warn!("set_macos_dock_icon: NSImage could not decode PNG data");
+        }
+    }
+}
