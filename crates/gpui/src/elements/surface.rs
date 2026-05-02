@@ -1,6 +1,6 @@
 use crate::{
-    App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
-    ObjectFit, Pixels, Style, StyleRefinement, Styled, Window,
+    App, Bounds, Element, ElementId, GlobalElementId, GpuTextureHandle, InspectorElementId,
+    IntoElement, LayoutId, ObjectFit, Pixels, Style, StyleRefinement, Styled, Window,
 };
 #[cfg(target_os = "macos")]
 use core_video::pixel_buffer::CVPixelBuffer;
@@ -12,6 +12,14 @@ pub enum SurfaceSource {
     /// A macOS image buffer from CoreVideo
     #[cfg(target_os = "macos")]
     Surface(CVPixelBuffer),
+    /// A platform-native external GPU texture.
+    Texture(GpuTextureHandle),
+}
+
+impl From<GpuTextureHandle> for SurfaceSource {
+    fn from(value: GpuTextureHandle) -> Self {
+        SurfaceSource::Texture(value)
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -29,7 +37,6 @@ pub struct Surface {
 }
 
 /// Create a new surface element.
-#[cfg(target_os = "macos")]
 pub fn surface(source: impl Into<SurfaceSource>) -> Surface {
     Surface {
         source: source.into(),
@@ -100,8 +107,11 @@ impl Element for Surface {
                 // TODO: Add support for corner_radii
                 window.paint_surface(new_bounds, surface.clone());
             }
-            #[allow(unreachable_patterns)]
-            _ => {}
+            SurfaceSource::Texture(texture) => {
+                let size = crate::size(texture.width.into(), texture.height.into());
+                let new_bounds = self.object_fit.get_bounds(bounds, size);
+                window.paint_gpu_texture(new_bounds, texture.clone());
+            }
         }
     }
 }

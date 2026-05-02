@@ -5,19 +5,20 @@ use crate::{
     AsyncWindowContext, AvailableSpace, Background, BorderStyle, Bounds, BoxShadow, Capslock,
     Context, Corners, CursorStyle, Decorations, DevicePixels, DispatchActionListener,
     DispatchNodeId, DispatchTree, DisplayId, Edges, Effect, Entity, EntityId, EventEmitter,
-    FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs, Hsla, InputHandler, IsZero,
-    KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke, KeystrokeEvent, LayoutId,
-    LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite, MouseButton, MouseEvent,
-    MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas, PlatformDisplay, PlatformInput,
-    PlatformInputHandler, PlatformWindow, Point, PolychromeSprite, Priority, PromptButton,
-    PromptLevel, Quad, Render, RenderGlyphParams, RenderImage, RenderImageParams, RenderSvgParams,
-    Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR, SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y,
-    ScaledPixels, Scene, Shadow, SharedString, Size, StrikethroughStyle, Style, SubpixelSprite,
-    SubscriberSet, Subscription, SystemWindowTab, SystemWindowTabController, TabStopMap,
-    TaffyLayoutEngine, Task, TextRenderingMode, TextStyle, TextStyleRefinement, ThermalState,
-    TransformationMatrix, Underline, UnderlineStyle, WindowAppearance, WindowBackgroundAppearance,
-    WindowBounds, WindowControls, WindowDecorations, WindowOptions, WindowParams, WindowTextSystem,
-    point, prelude::*, px, rems, size, transparent_black,
+    FileDropEvent, FontId, Global, GlobalElementId, GlyphId, GpuSpecs, GpuTextureHandle, Hsla,
+    InputHandler, IsZero, KeyBinding, KeyContext, KeyDownEvent, KeyEvent, Keystroke,
+    KeystrokeEvent, LayoutId, LineLayoutIndex, Modifiers, ModifiersChangedEvent, MonochromeSprite,
+    MouseButton, MouseEvent, MouseMoveEvent, MouseUpEvent, Path, Pixels, PlatformAtlas,
+    PlatformDisplay, PlatformInput, PlatformInputHandler, PlatformWindow, Point, PolychromeSprite,
+    Priority, PromptButton, PromptLevel, Quad, Render, RenderGlyphParams, RenderImage,
+    RenderImageParams, RenderSvgParams, Replay, ResizeEdge, SMOOTH_SVG_SCALE_FACTOR,
+    SUBPIXEL_VARIANTS_X, SUBPIXEL_VARIANTS_Y, ScaledPixels, Scene, Shadow, SharedString, Size,
+    StrikethroughStyle, Style, SubpixelSprite, SubscriberSet, Subscription, SystemWindowTab,
+    SystemWindowTabController, TabStopMap, TaffyLayoutEngine, Task, TextRenderingMode, TextStyle,
+    TextStyleRefinement, ThermalState, TransformationMatrix, Underline, UnderlineStyle,
+    WindowAppearance, WindowBackgroundAppearance, WindowBounds, WindowControls, WindowDecorations,
+    WindowOptions, WindowParams, WindowTextSystem, point, prelude::*, px, rems, size,
+    transparent_black,
 };
 use anyhow::{Context as _, Result, anyhow};
 use collections::{FxHashMap, FxHashSet};
@@ -3847,7 +3848,7 @@ impl Window {
     /// This method should only be called as part of the paint phase of element drawing.
     #[cfg(target_os = "macos")]
     pub fn paint_surface(&mut self, bounds: Bounds<Pixels>, image_buffer: CVPixelBuffer) {
-        use crate::PaintSurface;
+        use crate::{PaintSurface, SurfaceContent};
 
         self.invalidator.debug_assert_paint();
 
@@ -3857,7 +3858,23 @@ impl Window {
             order: 0,
             bounds,
             content_mask,
-            image_buffer,
+            content: SurfaceContent::CoreVideo(image_buffer),
+        });
+    }
+
+    /// Paint a platform-native external GPU texture into the scene for the next frame.
+    pub fn paint_gpu_texture(&mut self, bounds: Bounds<Pixels>, texture: GpuTextureHandle) {
+        use crate::{PaintSurface, SurfaceContent};
+
+        self.invalidator.debug_assert_paint();
+
+        let bounds = self.snap_bounds(bounds);
+        let content_mask = self.snapped_content_mask();
+        self.next_frame.scene.insert_primitive(PaintSurface {
+            order: 0,
+            bounds,
+            content_mask,
+            content: SurfaceContent::ExternalTexture(texture),
         });
     }
 

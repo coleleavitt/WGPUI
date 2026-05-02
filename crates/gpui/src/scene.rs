@@ -5,8 +5,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, Hsla, Pixels,
-    Point, Radians, ScaledPixels, Size, bounds_tree::BoundsTree, point,
+    AtlasTextureId, AtlasTile, Background, Bounds, ContentMask, Corners, Edges, GpuTextureHandle,
+    Hsla, Pixels, Point, Radians, ScaledPixels, Size, bounds_tree::BoundsTree, point,
 };
 use std::{
     fmt::Debug,
@@ -716,8 +716,15 @@ pub struct PaintSurface {
     pub order: DrawOrder,
     pub bounds: Bounds<ScaledPixels>,
     pub content_mask: ContentMask<ScaledPixels>,
+    pub content: SurfaceContent,
+}
+
+#[derive(Clone, Debug)]
+#[allow(missing_docs)]
+pub enum SurfaceContent {
     #[cfg(target_os = "macos")]
-    pub image_buffer: core_video::pixel_buffer::CVPixelBuffer,
+    CoreVideo(core_video::pixel_buffer::CVPixelBuffer),
+    ExternalTexture(GpuTextureHandle),
 }
 
 impl From<PaintSurface> for Primitive {

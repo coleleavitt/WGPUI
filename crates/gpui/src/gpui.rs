@@ -25,6 +25,7 @@ mod platform_scheduler;
 pub(crate) use platform_scheduler::PlatformScheduler;
 mod geometry;
 mod global;
+mod gpu_texture;
 mod input;
 mod inspector;
 mod interactive;
@@ -88,6 +89,7 @@ pub use elements::*;
 pub use executor::*;
 pub use geometry::*;
 pub use global::*;
+pub use gpu_texture::*;
 pub use gpui_macros::{
     AppContext, IntoElement, Render, VisualContext, property_test, register_action, test,
 };
