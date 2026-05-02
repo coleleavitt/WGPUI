@@ -1,46 +1,118 @@
-# Zed
+# wgpui
 
-[![Zed](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/zed-industries/zed/main/assets/badge/v0.json)](https://zed.dev)
-[![CI](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml/badge.svg)](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml)
+A GPU-accelerated UI framework for Rust, forked from [Zed's GPUI](https://github.com/zed-industries/zed) and stripped to the standalone framework with rendering performance optimizations.
 
-Welcome to Zed, a high-performance, multiplayer code editor from the creators of [Atom](https://github.com/atom/atom) and [Tree-sitter](https://github.com/tree-sitter/tree-sitter).
+## What is this?
 
----
+wgpui is GPUI extracted from the Zed editor into a standalone workspace (23 crates) with a focus on rendering pipeline performance. It includes the cross-platform wgpu renderer from [Far-Beyond-Pulsar](https://github.com/nicholasgasior/pulsar) and a suite of rendering optimizations:
 
-### Installation
+- **Incremental scene updates** — per-view chunk tracking, only dirty views rebuild their primitives
+- **Damage region rendering** — scissor rects clip GPU work to changed screen areas
+- **Persistent GPU buffers** — per-type STORAGE buffers with diff-based uploads (zero upload on static frames)
+- **Subtree skipping** — clean subtrees skip prepaint and paint entirely
+- **Layout caching** — taffy results cached per view, reused when constraints unchanged
+- **Batch merging** — same-order primitives grouped by type to reduce draw calls
 
-On macOS, Linux, and Windows you can [download Zed directly](https://zed.dev/download) or install Zed via your local package manager ([macOS](https://zed.dev/docs/installation#macos)/[Linux](https://zed.dev/docs/linux#installing-via-a-package-manager)/[Windows](https://zed.dev/docs/windows#package-managers)).
+## Quick Start
 
-Other platforms are not yet available:
+```rust
+use gpui::*;
+use gpui_platform::application;
 
-- Web ([tracking issue](https://github.com/zed-industries/zed/issues/5396))
+struct Hello;
 
-### Developing Zed
+impl Render for Hello {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex()
+            .size_full()
+            .justify_center()
+            .items_center()
+            .bg(rgb(0x1e1e2e))
+            .text_color(rgb(0xcdd6f4))
+            .child("Hello from wgpui!")
+    }
+}
 
-- [Building Zed for macOS](./docs/src/development/macos.md)
-- [Building Zed for Linux](./docs/src/development/linux.md)
-- [Building Zed for Windows](./docs/src/development/windows.md)
+fn main() {
+    application().run(|cx: &mut App| {
+        cx.open_window(WindowOptions::default(), |_, cx| cx.new(|_| Hello));
+    });
+}
+```
 
-### Contributing
+## Running the Examples
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for ways you can contribute to Zed.
+```bash
+# Hello world
+cargo run -p gpui --example hello_world
 
-Also... we're hiring! Check out our [jobs](https://zed.dev/jobs) page for open roles.
+# Rendering benchmark (1000 divs / 10k list items / animated)
+cargo run -p gpui --example bench_render --release
 
-### Licensing
+# With performance overlay
+cargo run -p gpui --example bench_render --release --features gpui/perf-overlay
+```
 
-License information for third party dependencies must be correctly provided for CI to pass.
+## Workspace Structure
 
-We use [`cargo-about`](https://github.com/EmbarkStudios/cargo-about) to automatically comply with open source licenses. If CI is failing, check the following:
+| Crate | Description |
+|---|---|
+| `gpui` | Core framework — elements, views, entities, styling, input |
+| `gpui_platform` | Platform abstraction layer |
+| `gpui_linux` | Linux backend (Wayland + X11) |
+| `gpui_macos` | macOS backend (Metal) |
+| `gpui_windows` | Windows backend |
+| `gpui_wgpu` | Cross-platform wgpu renderer (Vulkan/Metal/DX12) |
+| `gpui_macros` | Derive macros for actions, elements, etc. |
+| `perf` | Frame metrics and performance instrumentation |
+| `sum_tree` | Persistent B-tree for efficient list rendering |
 
-- Is it showing a `no license specified` error for a crate you've created? If so, add `publish = false` under `[package]` in your crate's Cargo.toml.
-- Is the error `failed to satisfy license requirements` for a dependency? If so, first determine what license the project has and whether this system is sufficient to comply with this license's requirements. If you're unsure, ask a lawyer. Once you've verified that this system is acceptable add the license's SPDX identifier to the `accepted` array in `script/licenses/zed-licenses.toml`.
-- Is `cargo-about` unable to find the license for a dependency? If so, add a clarification field at the end of `script/licenses/zed-licenses.toml`, as specified in the [cargo-about book](https://embarkstudios.github.io/cargo-about/cli/generate/config.html#crate-configuration).
+## Building
 
-## Sponsorship
+Requires Rust stable (latest) on Linux, macOS, or Windows.
 
-Zed is developed by **Zed Industries, Inc.**, a for-profit company.
+```bash
+# Check everything compiles
+cargo check --workspace
 
-If you’d like to financially support the project, you can do so via GitHub Sponsors.
-Sponsorships go directly to Zed Industries and are used as general company revenue.
-There are no perks or entitlements associated with sponsorship.
+# Run clippy
+./script/clippy
+
+# Build in release mode
+cargo build --workspace --release
+```
+
+### Linux Dependencies
+
+On Linux you'll need development headers for your display server:
+
+```bash
+# Wayland
+sudo apt install libwayland-dev libxkbcommon-dev
+
+# X11
+sudo apt install libx11-dev libxcb1-dev libxkbcommon-x11-dev
+```
+
+## Architecture
+
+GPUI is a hybrid immediate/retained mode framework:
+
+- **Entities** (`Entity<T>`) — owned application state, accessed through smart pointers
+- **Views** — entities that implement `Render`, producing element trees each frame
+- **Elements** — the building blocks: `div()`, `text()`, `uniform_list()`, etc.
+- **Styling** — Tailwind CSS-inspired builder API (`.flex()`, `.bg()`, `.p_4()`, etc.)
+- **Actions** — keyboard-driven commands dispatched through the focus tree
+- **Async** — integrated executor with `cx.spawn()` and `cx.background_spawn()`
+
+Rendering flows through: layout (taffy) → prepaint → paint → scene sort → GPU upload → draw.
+
+## Acknowledgments
+
+- [Zed Industries](https://zed.dev) — GPUI was created by the Zed team
+- [Far-Beyond-Pulsar](https://github.com/nicholasgasior/pulsar) — cross-platform wgpu renderer
+
+## License
+
+See individual crate licenses. GPUI is licensed under Apache-2.0/MIT.
