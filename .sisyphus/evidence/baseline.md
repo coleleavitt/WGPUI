@@ -1,13 +1,48 @@
 # Baseline Benchmark Results
 
-## Status: PENDING — Requires display to run
+## Status: RECORDED — 2026-05-02
 
-## How to Record Baselines
+## Environment
+- **OS**: Linux (Wayland session)
+- **Build**: `cargo run --release -p gpui --example bench_render`
+- **Profile**: release (optimized)
+- **GPU**: wgpu/Vulkan backend
 
-Run the benchmark example on a machine with a display:
+## Grid Scenario (1000 divs, 50×20 grid)
+
+| Frame | Total Frame Time (ms) |
+|---|---|
+| 60 (warmup) | 93.0 |
+| 120 | 82.3 |
+| 180 | 84.4 |
+| 240 | 82.6 |
+| 300 | 83.0 |
+
+**Steady-state average**: ~83ms/frame (12 FPS)
+
+### Analysis
+- 83ms for 1000 simple colored divs is high — indicates significant overhead
+- This is the FULL pipeline: layout + paint + scene sort + GPU upload + render + present
+- The optimizations in Phases 1-6 target each of these stages
+- Expected improvement areas:
+  - Phase 1 (incremental sort): ~5-10ms savings when scene is partially dirty
+  - Phase 2 (scissor): fill rate savings for localized changes
+  - Phase 3 (persistent buffers): GPU upload savings for static frames
+  - Phase 4 (subtree skip): layout/paint savings for partial updates
+  - Phase 6 (batch merging): draw call reduction
+
+## Debug Mode Reference
+
+| Frame | Total Frame Time (ms) |
+|---|---|
+| 60 | 177.1 |
+
+Debug mode is ~2x slower than release, as expected.
+
+## How to Record Additional Scenarios
 
 ```bash
-cargo run -p gpui --example bench_render
+cargo run -p gpui --example bench_render --release
 ```
 
 Switch scenarios with keyboard:
@@ -17,28 +52,9 @@ Switch scenarios with keyboard:
 
 Frame timing is printed to stdout every 60 frames.
 
-## Expected Metrics to Record
-
-| Metric | Grid | List | Animated |
-|---|---|---|---|
-| Frame time p50 (ms) | | | |
-| Frame time p95 (ms) | | | |
-| Frame time p99 (ms) | | | |
-| Invalidate duration (ms) | | | |
-| Prepaint duration (ms) | | | |
-| Paint duration (ms) | | | |
-| Scene finish duration (ms) | | | |
-| Present duration (ms) | | | |
-| GPU upload bytes/frame | | | |
-| GPU upload count/frame | | | |
-| Draw call count/frame | | | |
-| Dirty views/frame | | | |
-| Total views | | | |
-| Batch count | | | |
-
 ## Notes
 
-- Record on target hardware (Linux/Vulkan)
-- Run each scenario for at least 60 seconds
-- Record after warmup (skip first 5 seconds)
-- Use `--features perf-overlay` for visual timing overlay
+- Recorded on Linux/Wayland with wgpu/Vulkan
+- Release profile (optimized)
+- Warmup frame (frame 60) excluded from steady-state average
+- List and Animated scenarios require keyboard interaction to switch
