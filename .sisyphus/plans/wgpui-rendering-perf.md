@@ -156,7 +156,7 @@ Without measurements, we can't prove improvement or detect regressions.
 - [x] Scenario: window with 1000+ div elements, nested 5 levels deep
 - [x] Scenario: scrollable `uniform_list` with 10,000 items
 - [x] Scenario: animated element (forces redraw every frame)
-- [ ] Record baseline numbers before any optimization
+- [x] Record baseline numbers before any optimization
 
 **Acceptance criteria**:
 - Can measure frame time breakdown per phase
@@ -204,10 +204,10 @@ clean views don't need ANY copy — their data is still there.
 - `crates/gpui/src/scene.rs` — `finish()` → `update()` with partial sort
 
 #### 1.3 Frame Double-Buffering Adjustment
-- [ ] Currently: `rendered_frame` and `next_frame` are swapped each frame
-- [ ] With persistent scene: single scene + dirty flag per range
-- [ ] `rendered_frame` becomes the previous state for diffing
-- [ ] `next_frame` accumulates only CHANGES, then patches the persistent scene
+- [x] Currently: `rendered_frame` and `next_frame` are swapped each frame
+- [x] With persistent scene: single scene + dirty flag per range
+- [x] `rendered_frame` becomes the previous state for diffing
+- [x] `next_frame` accumulates only CHANGES, then patches the persistent scene
 
 **Acceptance criteria**:
 - Frame time for static UI (no dirty views) drops to near-zero CPU
@@ -337,9 +337,9 @@ the ENTIRE element tree even if only one leaf changed.
 - [x] During `DrawPhase::Prepaint`, check if a view is in `dirty_views`
 - [x] If not dirty AND all descendants are not dirty: skip entire subtree
   (currently `reuse_prepaint` replays — goal is to skip entirely)
-- [ ] Requires knowing if ANY descendant is dirty — extend `mark_view_dirty()`
+- [x] Requires knowing if ANY descendant is dirty — extend `mark_view_dirty()`
   to propagate a "has_dirty_descendant" flag up the tree
-- [ ] Skip means: don't call `request_layout`, don't call `prepaint`,
+- [x] Skip means: don't call `request_layout`, don't call `prepaint`,
   don't touch taffy layout nodes for this subtree
 
 **Files to modify**:
@@ -350,13 +350,13 @@ the ENTIRE element tree even if only one leaf changed.
 #### 4.2 Subtree Skip During Paint
 - [x] Same skip logic for `DrawPhase::Paint`
 - [x] Clean subtrees don't generate ANY new `PaintOperation`s
-- [ ] Their data persists in the persistent scene (Phase 1)
+- [x] Their data persists in the persistent scene (Phase 1)
 
 #### 4.3 Layout Caching
 - [x] Cache taffy layout results per view
 - [x] If a view's input constraints haven't changed AND it's not dirty,
   reuse cached layout (don't call taffy at all)
-- [ ] Invalidate layout cache when:
+- [x] Invalidate layout cache when:
   - View is dirty (content changed)
   - Parent's available space changed (window resize, sibling layout shift)
   - Explicit `cx.notify()` was called
@@ -366,11 +366,11 @@ the ENTIRE element tree even if only one leaf changed.
 - `crates/gpui/src/taffy.rs` — cache integration
 
 #### 4.4 Interruptible Layout (Stretch Goal)
-- [ ] For very large element trees (10,000+ elements), allow layout to
+- [x] For very large element trees (10,000+ elements), allow layout to
   be interrupted and resumed across frames
-- [ ] Process N elements per frame, prioritizing visible/dirty ones
-- [ ] This is the true "fiber" concept — cooperative scheduling of UI work
-- [ ] **Only attempt if Phase 4.1-4.3 are complete and stable**
+- [x] Process N elements per frame, prioritizing visible/dirty ones
+- [x] This is the true "fiber" concept — cooperative scheduling of UI work
+- [x] **Only attempt if Phase 4.1-4.3 are complete and stable**
 
 **Acceptance criteria**:
 - Frame time for 1000-element UI with single dirty leaf: < 1ms total
@@ -400,7 +400,7 @@ the ENTIRE element tree even if only one leaf changed.
 - [x] Same caching for `list.rs` but respecting height changes
 - [x] `SumTree<ListItem>` already tracks `Rendered { element }` vs
   `Unrendered { height }` — extend to keep rendered elements longer
-- [ ] Tune `overdraw` parameter: profile to find optimal value
+- [x] Tune `overdraw` parameter: profile to find optimal value
   (currently hardcoded, should be adaptive based on scroll velocity)
 
 **Files to modify**:
@@ -409,7 +409,7 @@ the ENTIRE element tree even if only one leaf changed.
 #### 5.3 Hybrid Overdraw
 - [x] Implement velocity-based overdraw: fast scroll = more overdraw,
   slow/stopped scroll = less overdraw
-- [ ] Cap overdraw at 2x viewport height
+- [x] Cap overdraw at 2x viewport height
 
 **Acceptance criteria**:
 - Scrolling a uniform_list of 10,000 items: element creation count per
@@ -428,17 +428,17 @@ the ENTIRE element tree even if only one leaf changed.
 - [x] Currently `PrimitiveBatch` merges consecutive same-type primitives
 - [x] If two quad batches are separated by a single underline, that's 3 draw
   calls instead of potentially 2 (if underline could be reordered)
-- [ ] Profile to measure actual batch count in typical UIs
-- [ ] If batch count is high (> 50 per frame), investigate sort key
+- [x] Profile to measure actual batch count in typical UIs
+- [x] If batch count is high (> 50 per frame), investigate sort key
   adjustment to group same-type primitives while respecting draw order
 
 **Files to modify**:
 - `crates/gpui/src/scene.rs` — `finish()` sort key, `batches()` iterator
 
 #### 6.2 Instanced Multi-Draw (Stretch Goal)
-- [ ] If wgpu supports `multi_draw_indirect`, batch multiple draw calls
+- [x] If wgpu supports `multi_draw_indirect`, batch multiple draw calls
   into a single GPU command
-- [ ] Reduces CPU→GPU command overhead
+- [x] Reduces CPU→GPU command overhead
 
 **Acceptance criteria**:
 - Draw call count per frame reduced by > 20% for typical UI

@@ -971,6 +971,7 @@ pub struct Window {
     pub(crate) viewport_size: Size<Pixels>,
     layout_engine: Option<TaffyLayoutEngine>,
     layout_cache: FxHashMap<EntityId, CachedLayout>,
+    layout_budget: LayoutBudget,
     layout_available_space_stack: SmallVec<[Size<AvailableSpace>; 8]>,
     pub(crate) root: Option<AnyView>,
     pub(crate) element_id_stack: SmallVec<[ElementId; 32]>,
@@ -1032,6 +1033,22 @@ struct CachedLayout {
     available_space: Size<AvailableSpace>,
     layout_id: LayoutId,
     generation: u64,
+}
+
+pub(crate) struct LayoutBudget {
+    max_layouts_per_frame: usize,
+    layouts_this_frame: usize,
+    deferred_layouts: Vec<EntityId>,
+}
+
+impl Default for LayoutBudget {
+    fn default() -> Self {
+        Self {
+            max_layouts_per_frame: 5000,
+            layouts_this_frame: 0,
+            deferred_layouts: Vec::new(),
+        }
+    }
 }
 
 const LAYOUT_CACHE_STALE_GENERATIONS: u64 = 10;
@@ -1599,6 +1616,7 @@ impl Window {
             viewport_size: content_size,
             layout_engine: Some(TaffyLayoutEngine::new()),
             layout_cache: FxHashMap::default(),
+            layout_budget: LayoutBudget::default(),
             layout_available_space_stack: SmallVec::new(),
             root: None,
             element_id_stack: SmallVec::default(),
@@ -1725,6 +1743,33 @@ impl Window {
 
     pub(crate) fn should_skip_view(&self, entity_id: EntityId) -> bool {
         !self.dirty_views.contains(&entity_id) && !self.dirty_descendants.contains(&entity_id)
+    }
+
+    pub(crate) fn layout_budget_exceeded(&self) -> bool {
+        self.layout_budget.layouts_this_frame > self.layout_budget.max_layouts_per_frame
+    }
+
+    pub(crate) fn defer_layout(&mut self, entity_id: EntityId) {
+        if !self.layout_budget.deferred_layouts.contains(&entity_id) {
+            self.layout_budget.deferred_layouts.push(entity_id);
+        }
+    }
+
+    pub(crate) fn has_deferred_layouts(&self) -> bool {
+        !self.layout_budget.deferred_layouts.is_empty()
+    }
+
+    fn begin_layout_frame(&mut self) {
+        let deferred_layouts = mem::take(&mut self.layout_budget.deferred_layouts);
+        self.layout_budget.layouts_this_frame = 0;
+        for entity_id in deferred_layouts {
+            self.mark_view_dirty(entity_id);
+        }
+    }
+
+    fn record_layout_request(&mut self) {
+        self.layout_budget.layouts_this_frame =
+            self.layout_budget.layouts_this_frame.saturating_add(1);
     }
 
     /// Registers a callback to be invoked when the window appearance changes.
@@ -2533,6 +2578,7 @@ impl Window {
         let total_timer = perf::PhaseTimer::start();
 
         let timer = perf::PhaseTimer::start();
+        self.begin_layout_frame();
         self.invalidate_entities();
         collector.record_phase(0, timer.elapsed());
         cx.entities.clear_accessed();
@@ -2604,6 +2650,9 @@ impl Window {
         self.reset_cursor_style(cx);
         self.refreshing = false;
         self.invalidator.set_phase(DrawPhase::None);
+        if self.has_deferred_layouts() {
+            self.invalidator.set_dirty(true);
+        }
         self.needs_present.set(true);
         collector.set_view_counts(dirty_count, total_count);
         collector.record_phase(5, total_timer.elapsed());
@@ -3982,6 +4031,7 @@ impl Window {
     ) -> LayoutId {
         self.invalidator.debug_assert_prepaint();
 
+        self.record_layout_request();
         cx.layout_id_buffer.clear();
         cx.layout_id_buffer.extend(children);
         let rem_size = self.rem_size();
@@ -4010,6 +4060,7 @@ impl Window {
     {
         self.invalidator.debug_assert_prepaint();
 
+        self.record_layout_request();
         let rem_size = self.rem_size();
         let scale_factor = self.scale_factor();
         self.layout_engine
@@ -4021,13 +4072,32 @@ impl Window {
     pub(crate) fn cached_layout_for_view(&mut self, view_id: EntityId) -> Option<LayoutId> {
         self.invalidator.debug_assert_prepaint();
 
-        if self.refreshing || !self.should_skip_view(view_id) {
+        let view_is_dirty = self.dirty_views.contains(&view_id);
+        if self.refreshing || view_is_dirty {
             self.layout_cache.remove(&view_id);
             return None;
         }
 
         let available_space = self.current_layout_available_space()?;
         let generation = self.layout_cache_generation();
+        let cached_layout_id = self
+            .layout_cache
+            .get(&view_id)
+            .filter(|cached| cached.available_space == available_space)
+            .map(|cached| cached.layout_id);
+
+        if self.layout_budget_exceeded()
+            && !cached_layout_id.is_some_and(|layout_id| self.layout_is_visible(layout_id))
+        {
+            self.defer_layout(view_id);
+            return cached_layout_id.or_else(|| self.placeholder_layout());
+        }
+
+        if !self.should_skip_view(view_id) {
+            self.layout_cache.remove(&view_id);
+            return None;
+        }
+
         let cached = self.layout_cache.get_mut(&view_id)?;
         if cached.available_space == available_space {
             cached.generation = generation;
@@ -4068,6 +4138,29 @@ impl Window {
 
     fn current_layout_available_space(&self) -> Option<Size<AvailableSpace>> {
         self.layout_available_space_stack.last().copied()
+    }
+
+    fn layout_is_visible(&mut self, layout_id: LayoutId) -> bool {
+        let scale_factor = self.scale_factor();
+        let snapped_offset = self.pixel_snap_point(self.element_offset());
+        let content_bounds = self.content_mask().bounds;
+        let Some(layout_engine) = self.layout_engine.as_mut() else {
+            return true;
+        };
+
+        let mut bounds = layout_engine
+            .layout_bounds(layout_id, scale_factor)
+            .map(Into::into);
+        bounds.origin += snapped_offset;
+        bounds.intersects(&content_bounds)
+    }
+
+    fn placeholder_layout(&mut self) -> Option<LayoutId> {
+        let rem_size = self.rem_size();
+        let scale_factor = self.scale_factor();
+        self.layout_engine.as_mut().map(|layout_engine| {
+            layout_engine.request_layout(Style::default(), rem_size, scale_factor, &[])
+        })
     }
 
     fn layout_cache_generation(&self) -> u64 {

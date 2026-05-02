@@ -143,6 +143,7 @@ struct WgpuResources {
 
 struct PersistentTypeBuffer {
     buffer: wgpu::Buffer,
+    usage: wgpu::BufferUsages,
     capacity: usize,
     len: usize,
     fragmentation_bytes: usize,
@@ -150,15 +151,30 @@ struct PersistentTypeBuffer {
 
 impl PersistentTypeBuffer {
     fn new(device: &wgpu::Device, label: &str, initial_capacity_bytes: usize) -> Self {
+        Self::new_with_usage(
+            device,
+            label,
+            initial_capacity_bytes,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        )
+    }
+
+    fn new_with_usage(
+        device: &wgpu::Device,
+        label: &str,
+        initial_capacity_bytes: usize,
+        usage: wgpu::BufferUsages,
+    ) -> Self {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
             size: initial_capacity_bytes as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage,
             mapped_at_creation: false,
         });
 
         Self {
             buffer,
+            usage,
             capacity: initial_capacity_bytes,
             len: 0,
             fragmentation_bytes: 0,
@@ -182,7 +198,7 @@ impl PersistentTypeBuffer {
         self.buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
             size: new_capacity as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: self.usage,
             mapped_at_creation: false,
         });
         self.capacity = new_capacity;
@@ -208,7 +224,7 @@ impl PersistentTypeBuffer {
             self.buffer = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
                 size: new_capacity as u64,
-                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                usage: self.usage,
                 mapped_at_creation: false,
             });
             self.capacity = new_capacity;
@@ -238,12 +254,13 @@ impl PersistentTypeBuffer {
         let mut bytes_uploaded = 0usize;
         for range in ranges {
             let byte_start = range.start.saturating_mul(element_size);
-            let byte_end = range
-                .end
-                .saturating_mul(element_size)
-                .min(full_data.len());
+            let byte_end = range.end.saturating_mul(element_size).min(full_data.len());
             if byte_start < byte_end && byte_end <= full_data.len() && byte_end <= self.capacity {
-                queue.write_buffer(&self.buffer, byte_start as u64, &full_data[byte_start..byte_end]);
+                queue.write_buffer(
+                    &self.buffer,
+                    byte_start as u64,
+                    &full_data[byte_start..byte_end],
+                );
                 bytes_uploaded = bytes_uploaded.saturating_add(byte_end - byte_start);
             }
         }
@@ -285,7 +302,11 @@ impl PersistentBuffers {
         Self {
             shadows: PersistentTypeBuffer::new(device, "shadows_persistent", initial_capacity),
             quads: PersistentTypeBuffer::new(device, "quads_persistent", initial_capacity),
-            underlines: PersistentTypeBuffer::new(device, "underlines_persistent", initial_capacity),
+            underlines: PersistentTypeBuffer::new(
+                device,
+                "underlines_persistent",
+                initial_capacity,
+            ),
             monochrome_sprites: PersistentTypeBuffer::new(
                 device,
                 "monochrome_sprites_persistent",
@@ -407,6 +428,8 @@ pub struct WgpuRenderer {
     has_drawn_frame: bool,
     last_frame_stats: Option<GpuFrameStats>,
     persistent_buffers: PersistentBuffers,
+    supports_multi_draw_indirect: bool,
+    indirect_buffer: Option<PersistentTypeBuffer>,
 }
 
 impl WgpuRenderer {
@@ -598,6 +621,14 @@ impl WgpuRenderer {
 
         let queue = Arc::clone(&context.queue);
         let dual_source_blending = context.supports_dual_source_blending();
+        let features = device.features();
+        let supports_multi_draw_count =
+            features.contains(wgpu::Features::MULTI_DRAW_INDIRECT_COUNT);
+        let supports_multi_draw_indirect = supports_multi_draw_count;
+        log::info!(
+            "multi_draw_indirect available: {}",
+            supports_multi_draw_indirect
+        );
 
         let rendering_params = RenderingParameters::new(&context.adapter, surface_format);
         let bind_group_layouts = Self::create_bind_group_layouts(&device);
@@ -714,6 +745,14 @@ impl WgpuRenderer {
             path_msaa_view: None,
         };
         let persistent_buffers = PersistentBuffers::new(&context.device);
+        let indirect_buffer = supports_multi_draw_indirect.then(|| {
+            PersistentTypeBuffer::new_with_usage(
+                &context.device,
+                "draw_indirect_args",
+                4 * 1024,
+                wgpu::BufferUsages::INDIRECT | wgpu::BufferUsages::COPY_DST,
+            )
+        });
 
         Ok(Self {
             context: gpu_context,
@@ -741,6 +780,8 @@ impl WgpuRenderer {
             has_drawn_frame: false,
             last_frame_stats: None,
             persistent_buffers,
+            supports_multi_draw_indirect,
+            indirect_buffer,
         })
     }
 
@@ -1508,11 +1549,9 @@ impl WgpuRenderer {
         {
             let resources = self.resources();
             let globals_data = bytemuck::bytes_of(&globals);
-            resources.queue.write_buffer(
-                &resources.globals_buffer,
-                0,
-                globals_data,
-            );
+            resources
+                .queue
+                .write_buffer(&resources.globals_buffer, 0, globals_data);
             upload_bytes = upload_bytes.saturating_add(globals_data.len());
             upload_count = upload_count.saturating_add(1);
 
@@ -1526,11 +1565,9 @@ impl WgpuRenderer {
             upload_count = upload_count.saturating_add(1);
 
             let gamma_data = bytemuck::bytes_of(&gamma_params);
-            resources.queue.write_buffer(
-                &resources.globals_buffer,
-                self.gamma_offset,
-                gamma_data,
-            );
+            resources
+                .queue
+                .write_buffer(&resources.globals_buffer, self.gamma_offset, gamma_data);
             upload_bytes = upload_bytes.saturating_add(gamma_data.len());
             upload_count = upload_count.saturating_add(1);
         }
@@ -1705,6 +1742,10 @@ impl WgpuRenderer {
                 });
                 Self::apply_scissor_rect(&mut pass, scissor_rect);
 
+                if self.supports_multi_draw_indirect && self.indirect_buffer.is_some() {
+                    // TODO: collect consecutive same-type batches into DrawIndirectArgs and issue multi_draw_indirect here.
+                }
+
                 for batch in scene.batches() {
                     let ok = match batch {
                         PrimitiveBatch::Quads(range) => {
@@ -1763,7 +1804,10 @@ impl WgpuRenderer {
                             }
                         }
                         PrimitiveBatch::Underlines(range) => {
-                            Self::add_primitive_count(&mut primitive_counts.underlines, range.len());
+                            Self::add_primitive_count(
+                                &mut primitive_counts.underlines,
+                                range.len(),
+                            );
                             self.draw_underlines_persistent(range, &mut pass, &mut draw_call_count)
                         }
                         PrimitiveBatch::MonochromeSprites { texture_id, range } => {
@@ -2324,7 +2368,7 @@ impl WgpuRenderer {
                             resource: wgpu::BindingResource::Sampler(&resources.atlas_sampler),
                         },
                     ],
-            });
+                });
             pass.set_bind_group(1, &bind_group, &[]);
             pass.draw(0..4, 0..1);
             *draw_call_count = draw_call_count.saturating_add(1);
@@ -2416,12 +2460,8 @@ impl WgpuRenderer {
         }
 
         let vertex_data = unsafe { Self::instance_bytes(&vertices) };
-        let Some((vertex_offset, vertex_size)) = self.write_to_instance_buffer(
-            instance_offset,
-            vertex_data,
-            upload_bytes,
-            upload_count,
-        )
+        let Some((vertex_offset, vertex_size)) =
+            self.write_to_instance_buffer(instance_offset, vertex_data, upload_bytes, upload_count)
         else {
             return false;
         };
