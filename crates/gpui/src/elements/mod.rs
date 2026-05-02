@@ -7,6 +7,8 @@ mod gpu_canvas;
 mod image_cache;
 mod img;
 mod list;
+#[cfg(feature = "perf-overlay")]
+mod perf_overlay;
 mod surface;
 mod svg;
 mod text;
@@ -21,6 +23,8 @@ pub use gpu_canvas::*;
 pub use image_cache::*;
 pub use img::*;
 pub use list::*;
+#[cfg(feature = "perf-overlay")]
+pub use perf_overlay::*;
 pub use surface::*;
 pub use svg::*;
 pub use text::*;

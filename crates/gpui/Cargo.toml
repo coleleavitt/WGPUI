@@ -39,6 +39,7 @@ screen-capture = [
 ]
 windows-manifest = ["dep:embed-resource"]
 input-latency-histogram = ["dep:hdrhistogram"]
+perf-overlay = []
 
 [lib]
 path = "src/gpui.rs"
@@ -66,6 +67,7 @@ log.workspace = true
 num_cpus = "1.13"
 parking = "2.0.0"
 parking_lot.workspace = true
+perf.workspace = true
 postage.workspace = true
 proptest = { workspace = true, optional = true }
 chrono.workspace = true
@@ -177,6 +179,10 @@ cbindgen = { version = "0.28.0", default-features = false }
 [[example]]
 name = "hello_world"
 path = "examples/hello_world.rs"
+
+[[example]]
+name = "bench_render"
+path = "examples/bench_render.rs"
 
 [[example]]
 name = "move_entity_between_windows"

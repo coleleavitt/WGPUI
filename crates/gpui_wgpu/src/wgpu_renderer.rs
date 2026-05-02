@@ -82,6 +82,14 @@ pub struct WgpuSurfaceConfig {
     pub preferred_present_mode: Option<wgpu::PresentMode>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct GpuFrameStats {
+    pub upload_bytes: usize,
+    pub upload_count: u32,
+    pub draw_call_count: u32,
+    pub primitive_counts: perf::PrimitiveCounts,
+}
+
 struct WgpuPipelines {
     quads: wgpu::RenderPipeline,
     shadows: wgpu::RenderPipeline,
@@ -159,6 +167,7 @@ pub struct WgpuRenderer {
     device_lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
     surface_configured: bool,
     needs_redraw: bool,
+    last_frame_stats: Option<GpuFrameStats>,
 }
 
 impl WgpuRenderer {
@@ -489,6 +498,7 @@ impl WgpuRenderer {
             device_lost: context.device_lost_flag(),
             surface_configured: true,
             needs_redraw: false,
+            last_frame_stats: None,
         })
     }
 
@@ -1071,6 +1081,11 @@ impl WgpuRenderer {
     }
 
     pub fn draw(&mut self, scene: &Scene) {
+        let mut upload_bytes: usize = 0;
+        let mut upload_count: u32 = 0;
+        let mut draw_call_count: u32 = 0;
+        let mut primitive_counts = perf::PrimitiveCounts::default();
+
         // Bail out early if the surface has been unconfigured (e.g. during
         // Android background/rotation transitions).  Attempting to acquire
         // a texture from an unconfigured surface can block indefinitely on
@@ -1171,21 +1186,32 @@ impl WgpuRenderer {
 
         {
             let resources = self.resources();
+            let globals_data = bytemuck::bytes_of(&globals);
             resources.queue.write_buffer(
                 &resources.globals_buffer,
                 0,
-                bytemuck::bytes_of(&globals),
+                globals_data,
             );
+            upload_bytes = upload_bytes.saturating_add(globals_data.len());
+            upload_count = upload_count.saturating_add(1);
+
+            let path_globals_data = bytemuck::bytes_of(&path_globals);
             resources.queue.write_buffer(
                 &resources.globals_buffer,
                 self.path_globals_offset,
-                bytemuck::bytes_of(&path_globals),
+                path_globals_data,
             );
+            upload_bytes = upload_bytes.saturating_add(path_globals_data.len());
+            upload_count = upload_count.saturating_add(1);
+
+            let gamma_data = bytemuck::bytes_of(&gamma_params);
             resources.queue.write_buffer(
                 &resources.globals_buffer,
                 self.gamma_offset,
-                bytemuck::bytes_of(&gamma_params),
+                gamma_data,
             );
+            upload_bytes = upload_bytes.saturating_add(gamma_data.len());
+            upload_count = upload_count.saturating_add(1);
         }
 
         loop {
@@ -1218,14 +1244,29 @@ impl WgpuRenderer {
                 for batch in scene.batches() {
                     let ok = match batch {
                         PrimitiveBatch::Quads(range) => {
-                            self.draw_quads(&scene.quads[range], &mut instance_offset, &mut pass)
+                            Self::add_primitive_count(&mut primitive_counts.quads, range.len());
+                            self.draw_quads(
+                                &scene.quads[range],
+                                &mut instance_offset,
+                                &mut pass,
+                                &mut upload_bytes,
+                                &mut upload_count,
+                                &mut draw_call_count,
+                            )
                         }
-                        PrimitiveBatch::Shadows(range) => self.draw_shadows(
-                            &scene.shadows[range],
-                            &mut instance_offset,
-                            &mut pass,
-                        ),
+                        PrimitiveBatch::Shadows(range) => {
+                            Self::add_primitive_count(&mut primitive_counts.shadows, range.len());
+                            self.draw_shadows(
+                                &scene.shadows[range],
+                                &mut instance_offset,
+                                &mut pass,
+                                &mut upload_bytes,
+                                &mut upload_count,
+                                &mut draw_call_count,
+                            )
+                        }
                         PrimitiveBatch::Paths(range) => {
+                            Self::add_primitive_count(&mut primitive_counts.paths, range.len());
                             let paths = &scene.paths[range];
                             if paths.is_empty() {
                                 continue;
@@ -1237,6 +1278,9 @@ impl WgpuRenderer {
                                 &mut encoder,
                                 paths,
                                 &mut instance_offset,
+                                &mut upload_bytes,
+                                &mut upload_count,
+                                &mut draw_call_count,
                             );
 
                             pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1259,39 +1303,77 @@ impl WgpuRenderer {
                                     paths,
                                     &mut instance_offset,
                                     &mut pass,
+                                    &mut upload_bytes,
+                                    &mut upload_count,
+                                    &mut draw_call_count,
                                 )
                             } else {
                                 false
                             }
                         }
-                        PrimitiveBatch::Underlines(range) => self.draw_underlines(
-                            &scene.underlines[range],
-                            &mut instance_offset,
-                            &mut pass,
-                        ),
-                        PrimitiveBatch::MonochromeSprites { texture_id, range } => self
-                            .draw_monochrome_sprites(
+                        PrimitiveBatch::Underlines(range) => {
+                            Self::add_primitive_count(&mut primitive_counts.underlines, range.len());
+                            self.draw_underlines(
+                                &scene.underlines[range],
+                                &mut instance_offset,
+                                &mut pass,
+                                &mut upload_bytes,
+                                &mut upload_count,
+                                &mut draw_call_count,
+                            )
+                        }
+                        PrimitiveBatch::MonochromeSprites { texture_id, range } => {
+                            Self::add_primitive_count(
+                                &mut primitive_counts.monochrome_sprites,
+                                range.len(),
+                            );
+                            self.draw_monochrome_sprites(
                                 &scene.monochrome_sprites[range],
                                 texture_id,
                                 &mut instance_offset,
                                 &mut pass,
-                            ),
-                        PrimitiveBatch::SubpixelSprites { texture_id, range } => self
-                            .draw_subpixel_sprites(
+                                &mut upload_bytes,
+                                &mut upload_count,
+                                &mut draw_call_count,
+                            )
+                        }
+                        PrimitiveBatch::SubpixelSprites { texture_id, range } => {
+                            Self::add_primitive_count(
+                                &mut primitive_counts.subpixel_sprites,
+                                range.len(),
+                            );
+                            self.draw_subpixel_sprites(
                                 &scene.subpixel_sprites[range],
                                 texture_id,
                                 &mut instance_offset,
                                 &mut pass,
-                            ),
-                        PrimitiveBatch::PolychromeSprites { texture_id, range } => self
-                            .draw_polychrome_sprites(
+                                &mut upload_bytes,
+                                &mut upload_count,
+                                &mut draw_call_count,
+                            )
+                        }
+                        PrimitiveBatch::PolychromeSprites { texture_id, range } => {
+                            Self::add_primitive_count(
+                                &mut primitive_counts.polychrome_sprites,
+                                range.len(),
+                            );
+                            self.draw_polychrome_sprites(
                                 &scene.polychrome_sprites[range],
                                 texture_id,
                                 &mut instance_offset,
                                 &mut pass,
-                            ),
+                                &mut upload_bytes,
+                                &mut upload_count,
+                                &mut draw_call_count,
+                            )
+                        }
                         PrimitiveBatch::Surfaces(range) => {
-                            self.draw_surfaces(&scene.surfaces[range], &mut pass)
+                            Self::add_primitive_count(&mut primitive_counts.surfaces, range.len());
+                            self.draw_surfaces(
+                                &scene.surfaces[range],
+                                &mut pass,
+                                &mut draw_call_count,
+                            )
                         }
                     };
                     if !ok {
@@ -1319,6 +1401,12 @@ impl WgpuRenderer {
                 .queue
                 .submit(std::iter::once(encoder.finish()));
             frame.present();
+            self.last_frame_stats = Some(GpuFrameStats {
+                upload_bytes,
+                upload_count,
+                draw_call_count,
+                primitive_counts,
+            });
             return;
         }
     }
@@ -1328,6 +1416,9 @@ impl WgpuRenderer {
         quads: &[Quad],
         instance_offset: &mut u64,
         pass: &mut wgpu::RenderPass<'_>,
+        upload_bytes: &mut usize,
+        upload_count: &mut u32,
+        draw_call_count: &mut u32,
     ) -> bool {
         let data = unsafe { Self::instance_bytes(quads) };
         self.draw_instances(
@@ -1336,6 +1427,9 @@ impl WgpuRenderer {
             &self.resources().pipelines.quads,
             instance_offset,
             pass,
+            upload_bytes,
+            upload_count,
+            draw_call_count,
         )
     }
 
@@ -1344,6 +1438,9 @@ impl WgpuRenderer {
         shadows: &[Shadow],
         instance_offset: &mut u64,
         pass: &mut wgpu::RenderPass<'_>,
+        upload_bytes: &mut usize,
+        upload_count: &mut u32,
+        draw_call_count: &mut u32,
     ) -> bool {
         let data = unsafe { Self::instance_bytes(shadows) };
         self.draw_instances(
@@ -1352,6 +1449,9 @@ impl WgpuRenderer {
             &self.resources().pipelines.shadows,
             instance_offset,
             pass,
+            upload_bytes,
+            upload_count,
+            draw_call_count,
         )
     }
 
@@ -1360,6 +1460,9 @@ impl WgpuRenderer {
         underlines: &[Underline],
         instance_offset: &mut u64,
         pass: &mut wgpu::RenderPass<'_>,
+        upload_bytes: &mut usize,
+        upload_count: &mut u32,
+        draw_call_count: &mut u32,
     ) -> bool {
         let data = unsafe { Self::instance_bytes(underlines) };
         self.draw_instances(
@@ -1368,6 +1471,9 @@ impl WgpuRenderer {
             &self.resources().pipelines.underlines,
             instance_offset,
             pass,
+            upload_bytes,
+            upload_count,
+            draw_call_count,
         )
     }
 
@@ -1377,6 +1483,9 @@ impl WgpuRenderer {
         texture_id: AtlasTextureId,
         instance_offset: &mut u64,
         pass: &mut wgpu::RenderPass<'_>,
+        upload_bytes: &mut usize,
+        upload_count: &mut u32,
+        draw_call_count: &mut u32,
     ) -> bool {
         let tex_info = self.atlas.get_texture_info(texture_id);
         let data = unsafe { Self::instance_bytes(sprites) };
@@ -1387,6 +1496,9 @@ impl WgpuRenderer {
             &self.resources().pipelines.mono_sprites,
             instance_offset,
             pass,
+            upload_bytes,
+            upload_count,
+            draw_call_count,
         )
     }
 
@@ -1396,6 +1508,9 @@ impl WgpuRenderer {
         texture_id: AtlasTextureId,
         instance_offset: &mut u64,
         pass: &mut wgpu::RenderPass<'_>,
+        upload_bytes: &mut usize,
+        upload_count: &mut u32,
+        draw_call_count: &mut u32,
     ) -> bool {
         let tex_info = self.atlas.get_texture_info(texture_id);
         let data = unsafe { Self::instance_bytes(sprites) };
@@ -1412,6 +1527,9 @@ impl WgpuRenderer {
             pipeline,
             instance_offset,
             pass,
+            upload_bytes,
+            upload_count,
+            draw_call_count,
         )
     }
 
@@ -1421,6 +1539,9 @@ impl WgpuRenderer {
         texture_id: AtlasTextureId,
         instance_offset: &mut u64,
         pass: &mut wgpu::RenderPass<'_>,
+        upload_bytes: &mut usize,
+        upload_count: &mut u32,
+        draw_call_count: &mut u32,
     ) -> bool {
         let tex_info = self.atlas.get_texture_info(texture_id);
         let data = unsafe { Self::instance_bytes(sprites) };
@@ -1431,6 +1552,9 @@ impl WgpuRenderer {
             &self.resources().pipelines.poly_sprites,
             instance_offset,
             pass,
+            upload_bytes,
+            upload_count,
+            draw_call_count,
         )
     }
 
@@ -1441,11 +1565,16 @@ impl WgpuRenderer {
         pipeline: &wgpu::RenderPipeline,
         instance_offset: &mut u64,
         pass: &mut wgpu::RenderPass<'_>,
+        upload_bytes: &mut usize,
+        upload_count: &mut u32,
+        draw_call_count: &mut u32,
     ) -> bool {
         if instance_count == 0 {
             return true;
         }
-        let Some((offset, size)) = self.write_to_instance_buffer(instance_offset, data) else {
+        let Some((offset, size)) =
+            self.write_to_instance_buffer(instance_offset, data, upload_bytes, upload_count)
+        else {
             return false;
         };
         let resources = self.resources();
@@ -1463,6 +1592,7 @@ impl WgpuRenderer {
         pass.set_bind_group(0, &resources.globals_bind_group, &[]);
         pass.set_bind_group(1, &bind_group, &[]);
         pass.draw(0..4, 0..instance_count);
+        *draw_call_count = draw_call_count.saturating_add(1);
         true
     }
 
@@ -1474,11 +1604,16 @@ impl WgpuRenderer {
         pipeline: &wgpu::RenderPipeline,
         instance_offset: &mut u64,
         pass: &mut wgpu::RenderPass<'_>,
+        upload_bytes: &mut usize,
+        upload_count: &mut u32,
+        draw_call_count: &mut u32,
     ) -> bool {
         if instance_count == 0 {
             return true;
         }
-        let Some((offset, size)) = self.write_to_instance_buffer(instance_offset, data) else {
+        let Some((offset, size)) =
+            self.write_to_instance_buffer(instance_offset, data, upload_bytes, upload_count)
+        else {
             return false;
         };
         let resources = self.resources();
@@ -1506,6 +1641,7 @@ impl WgpuRenderer {
         pass.set_bind_group(0, &resources.globals_bind_group, &[]);
         pass.set_bind_group(1, &bind_group, &[]);
         pass.draw(0..4, 0..instance_count);
+        *draw_call_count = draw_call_count.saturating_add(1);
         true
     }
 
@@ -1513,6 +1649,7 @@ impl WgpuRenderer {
         &self,
         surfaces: &[gpui::PaintSurface],
         pass: &mut wgpu::RenderPass<'_>,
+        draw_call_count: &mut u32,
     ) -> bool {
         let resources = self.resources();
         pass.set_pipeline(&resources.pipelines.surfaces);
@@ -1564,9 +1701,10 @@ impl WgpuRenderer {
                             resource: wgpu::BindingResource::Sampler(&resources.atlas_sampler),
                         },
                     ],
-                });
+            });
             pass.set_bind_group(1, &bind_group, &[]);
             pass.draw(0..4, 0..1);
+            *draw_call_count = draw_call_count.saturating_add(1);
         }
 
         true
@@ -1581,11 +1719,18 @@ impl WgpuRenderer {
         }
     }
 
+    fn add_primitive_count(count: &mut u32, len: usize) {
+        *count = count.saturating_add(u32::try_from(len).unwrap_or(u32::MAX));
+    }
+
     fn draw_paths_from_intermediate(
         &self,
         paths: &[Path<ScaledPixels>],
         instance_offset: &mut u64,
         pass: &mut wgpu::RenderPass<'_>,
+        upload_bytes: &mut usize,
+        upload_count: &mut u32,
+        draw_call_count: &mut u32,
     ) -> bool {
         let first_path = &paths[0];
         let sprites: Vec<PathSprite> = if paths.last().map(|p| &p.order) == Some(&first_path.order)
@@ -1617,6 +1762,9 @@ impl WgpuRenderer {
             &resources.pipelines.paths,
             instance_offset,
             pass,
+            upload_bytes,
+            upload_count,
+            draw_call_count,
         )
     }
 
@@ -1625,6 +1773,9 @@ impl WgpuRenderer {
         encoder: &mut wgpu::CommandEncoder,
         paths: &[Path<ScaledPixels>],
         instance_offset: &mut u64,
+        upload_bytes: &mut usize,
+        upload_count: &mut u32,
+        draw_call_count: &mut u32,
     ) -> bool {
         let mut vertices = Vec::new();
         for path in paths {
@@ -1642,8 +1793,12 @@ impl WgpuRenderer {
         }
 
         let vertex_data = unsafe { Self::instance_bytes(&vertices) };
-        let Some((vertex_offset, vertex_size)) =
-            self.write_to_instance_buffer(instance_offset, vertex_data)
+        let Some((vertex_offset, vertex_size)) = self.write_to_instance_buffer(
+            instance_offset,
+            vertex_data,
+            upload_bytes,
+            upload_count,
+        )
         else {
             return false;
         };
@@ -1690,6 +1845,7 @@ impl WgpuRenderer {
             pass.set_bind_group(0, &resources.path_globals_bind_group, &[]);
             pass.set_bind_group(1, &data_bind_group, &[]);
             pass.draw(0..vertices.len() as u32, 0..1);
+            *draw_call_count = draw_call_count.saturating_add(1);
         }
 
         true
@@ -1712,6 +1868,8 @@ impl WgpuRenderer {
         &self,
         instance_offset: &mut u64,
         data: &[u8],
+        upload_bytes: &mut usize,
+        upload_count: &mut u32,
     ) -> Option<(u64, NonZeroU64)> {
         let offset = (*instance_offset).next_multiple_of(self.storage_buffer_alignment);
         let size = (data.len() as u64).max(16);
@@ -1722,6 +1880,8 @@ impl WgpuRenderer {
         resources
             .queue
             .write_buffer(&resources.instance_buffer, offset, data);
+        *upload_bytes = upload_bytes.saturating_add(data.len());
+        *upload_count = upload_count.saturating_add(1);
         *instance_offset = offset + size;
         Some((offset, NonZeroU64::new(size).expect("size is at least 16")))
     }
@@ -1818,6 +1978,10 @@ impl WgpuRenderer {
     /// Calling this method clears the flag.
     pub fn needs_redraw(&mut self) -> bool {
         std::mem::take(&mut self.needs_redraw)
+    }
+
+    pub fn last_frame_stats(&self) -> Option<&GpuFrameStats> {
+        self.last_frame_stats.as_ref()
     }
 
     /// Recovers from a lost GPU device by recreating the renderer with a new context.

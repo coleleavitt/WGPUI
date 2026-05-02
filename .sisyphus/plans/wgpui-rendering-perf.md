@@ -134,8 +134,8 @@ separate effort.
 Without measurements, we can't prove improvement or detect regressions.
 
 #### 0.1 Frame Timing Infrastructure
-- [ ] Add frame-time measurement to `Window::draw()` and `Window::present()`
-- [ ] Measure time in each sub-phase:
+- [x] Add frame-time measurement to `Window::draw()` and `Window::present()`
+- [x] Measure time in each sub-phase:
   - `invalidate_entities()` duration
   - `draw_roots()` → prepaint duration
   - `draw_roots()` → paint duration
@@ -143,8 +143,8 @@ Without measurements, we can't prove improvement or detect regressions.
   - `WgpuRenderer::draw()` total duration
   - `queue.write_buffer()` cumulative bytes per frame
   - Draw call count per frame
-- [ ] Expose via the existing `perf` crate (replace stub with real impl)
-- [ ] Add opt-in frame-time overlay (conditional on feature flag)
+- [x] Expose via the existing `perf` crate (replace stub with real impl)
+- [x] Add opt-in frame-time overlay (conditional on feature flag)
 
 **Files to modify**:
 - `crates/perf/src/perf.rs` — real implementation
@@ -152,10 +152,10 @@ Without measurements, we can't prove improvement or detect regressions.
 - `crates/gpui_wgpu/src/wgpu_renderer.rs` — GPU submission timing
 
 #### 0.2 Benchmark Harness
-- [ ] Create `crates/gpui/examples/bench_render.rs` stress test
-- [ ] Scenario: window with 1000+ div elements, nested 5 levels deep
-- [ ] Scenario: scrollable `uniform_list` with 10,000 items
-- [ ] Scenario: animated element (forces redraw every frame)
+- [x] Create `crates/gpui/examples/bench_render.rs` stress test
+- [x] Scenario: window with 1000+ div elements, nested 5 levels deep
+- [x] Scenario: scrollable `uniform_list` with 10,000 items
+- [x] Scenario: animated element (forces redraw every frame)
 - [ ] Record baseline numbers before any optimization
 
 **Acceptance criteria**:

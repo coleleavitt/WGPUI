@@ -8,5 +8,7 @@ description = "Performance testing utilities for WGPUI"
 [lib]
 path = "src/perf.rs"
 
+[dependencies]
+
 [lints]
 workspace = true

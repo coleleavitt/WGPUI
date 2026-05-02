@@ -25,6 +25,7 @@ etagere = "0.2"
 itertools.workspace = true
 log.workspace = true
 parking_lot.workspace = true
+perf.workspace = true
 profiling.workspace = true
 raw-window-handle = "0.6"
 smallvec.workspace = true

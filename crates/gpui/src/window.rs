@@ -981,6 +981,8 @@ pub struct Window {
     pub(crate) image_cache_stack: Vec<AnyImageCache>,
     pub(crate) rendered_frame: Frame,
     pub(crate) next_frame: Frame,
+    frame_metrics: Option<perf::FrameMetrics>,
+    frame_number: u64,
     next_hitbox_id: HitboxId,
     pub(crate) next_tooltip_id: TooltipId,
     pub(crate) tooltip_bounds: Option<TooltipBounds>,
@@ -1595,6 +1597,8 @@ impl Window {
             requested_autoscroll: None,
             rendered_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
             next_frame: Frame::new(DispatchTree::new(cx.keymap.clone(), cx.actions.clone())),
+            frame_metrics: None,
+            frame_number: 0,
             next_frame_callbacks,
             next_hitbox_id: HitboxId(0),
             next_tooltip_id: TooltipId::default(),
@@ -1640,6 +1644,11 @@ impl Window {
         value: AnyWindowFocusListener,
     ) -> (Subscription, impl FnOnce() + use<>) {
         self.focus_listeners.insert((), value)
+    }
+
+    /// Returns metrics collected during the most recent draw.
+    pub fn frame_metrics(&self) -> Option<&perf::FrameMetrics> {
+        self.frame_metrics.as_ref()
     }
 }
 
@@ -2486,7 +2495,13 @@ impl Window {
         // This ensures that multiple test Apps have isolated arenas.
         let _arena_scope = ElementArenaScope::enter(&cx.element_arena);
 
+        self.frame_number += 1;
+        let mut collector = perf::FrameMetricsCollector::new(self.frame_number);
+        let total_timer = perf::PhaseTimer::start();
+
+        let timer = perf::PhaseTimer::start();
         self.invalidate_entities();
+        collector.record_phase(0, timer.elapsed());
         cx.entities.clear_accessed();
         debug_assert!(self.rendered_entity_stack.is_empty());
         self.invalidator.set_dirty(false);
@@ -2497,8 +2512,10 @@ impl Window {
             self.rendered_frame.input_handlers.push(Some(input_handler));
         }
         if !cx.mode.skip_drawing() {
-            self.draw_roots(cx);
+            self.draw_roots(cx, &mut collector);
         }
+        let dirty_count = self.dirty_views.len() as u32;
+        let total_count = self.next_frame.dispatch_tree.len() as u32;
         self.dirty_views.clear();
         self.next_frame.window_active = self.active.get();
 
@@ -2510,7 +2527,9 @@ impl Window {
 
         self.layout_engine.as_mut().unwrap().clear();
         self.text_system().finish_frame();
+        let timer = perf::PhaseTimer::start();
         self.next_frame.finish(&mut self.rendered_frame);
+        collector.record_phase(3, timer.elapsed());
 
         self.invalidator.set_phase(DrawPhase::Focus);
         let previous_focus_path = self.rendered_frame.focus_path();
@@ -2552,6 +2571,9 @@ impl Window {
         self.refreshing = false;
         self.invalidator.set_phase(DrawPhase::None);
         self.needs_present.set(true);
+        collector.set_view_counts(dirty_count, total_count);
+        collector.record_phase(5, total_timer.elapsed());
+        self.frame_metrics = Some(collector.finish());
 
         ArenaClearNeeded::new(&cx.element_arena)
     }
@@ -2593,7 +2615,8 @@ impl Window {
         self.input_latency_tracker.snapshot()
     }
 
-    fn draw_roots(&mut self, cx: &mut App) {
+    fn draw_roots(&mut self, cx: &mut App, collector: &mut perf::FrameMetricsCollector) {
+        let timer = perf::PhaseTimer::start();
         self.invalidator.set_phase(DrawPhase::Prepaint);
         self.tooltip_bounds.take();
 
@@ -2643,8 +2666,10 @@ impl Window {
         }
 
         self.mouse_hit_test = self.next_frame.hit_test(self.mouse_position);
+        collector.record_phase(1, timer.elapsed());
 
         // Now actually paint the elements.
+        let timer = perf::PhaseTimer::start();
         self.invalidator.set_phase(DrawPhase::Paint);
         root_element.paint(self, cx);
 
@@ -2663,6 +2688,7 @@ impl Window {
 
         #[cfg(any(feature = "inspector", debug_assertions))]
         self.paint_inspector_hitbox(cx);
+        collector.record_phase(2, timer.elapsed());
     }
 
     fn prepaint_tooltip(&mut self, cx: &mut App) -> Option<AnyElement> {
