@@ -229,10 +229,10 @@ Once the scene is persistent and we know which ranges changed, we can compute
 damage rectangles and scope the render pass.
 
 #### 2.1 Damage Rect Computation
-- [ ] When a view's scene range is updated, compute its bounding rect
-- [ ] Union all dirty view bounding rects into a damage region
-- [ ] Store `damage_rects: Vec<Rect>` on the Frame/Scene
-- [ ] Merge overlapping rects to avoid redundant passes
+- [x] When a view's scene range is updated, compute its bounding rect
+- [x] Union all dirty view bounding rects into a damage region
+- [x] Store `damage_rects: Vec<Rect>` on the Frame/Scene
+- [x] Merge overlapping rects to avoid redundant passes
 
 **Reference**: NVIDIA DRM driver uses per-property dirty bits
 (`surfaceChanged`, `srcXYChanged`, etc.) — same concept at UI level.
@@ -242,10 +242,10 @@ damage rectangles and scope the render pass.
 - `crates/gpui/src/window.rs` — propagate damage rects to renderer
 
 #### 2.2 Scissored Render Pass
-- [ ] Pass damage rects to `WgpuRenderer::draw()`
-- [ ] Set scissor rect on the render pass to clip to damaged region
-- [ ] Skip `load_op: Clear` for the full framebuffer — only clear damaged rects
-- [ ] For non-damaged regions, use `load_op: Load` to preserve previous frame
+- [x] Pass damage rects to `WgpuRenderer::draw()`
+- [x] Set scissor rect on the render pass to clip to damaged region
+- [x] Skip `load_op: Clear` for the full framebuffer — only clear damaged rects
+- [x] For non-damaged regions, use `load_op: Load` to preserve previous frame
 
 **Note**: wgpu supports `set_scissor_rect()` on the render pass encoder.
 Multiple scissor rects require multiple render passes or a single merged rect.
@@ -255,10 +255,9 @@ Start with single merged rect (union of all damage rects).
 - `crates/gpui_wgpu/src/wgpu_renderer.rs` — scissor rect, conditional clear
 
 #### 2.3 Full-Redraw Fallback
-- [ ] If damage region covers > 70% of screen area, fall back to full redraw
-  (scissoring has overhead; full clear + draw is faster when most changed)
-- [ ] Window resize always triggers full redraw
-- [ ] First frame after window open is always full redraw
+- [x] If damage region covers > 70% of screen area, fall back to full redraw
+- [x] Window resize always triggers full redraw
+- [x] First frame after window open is always full redraw
 
 **Acceptance criteria**:
 - Cursor blink in a text field triggers damage rect covering only the

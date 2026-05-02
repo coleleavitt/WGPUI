@@ -55,6 +55,14 @@ struct GammaParams {
     _pad: u32,
 }
 
+#[derive(Clone, Copy)]
+struct ScissorRect {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
 #[derive(Clone, Debug)]
 #[repr(C)]
 struct PathSprite {
@@ -167,6 +175,7 @@ pub struct WgpuRenderer {
     device_lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
     surface_configured: bool,
     needs_redraw: bool,
+    has_drawn_frame: bool,
     last_frame_stats: Option<GpuFrameStats>,
 }
 
@@ -498,6 +507,7 @@ impl WgpuRenderer {
             device_lost: context.device_lost_flag(),
             surface_configured: true,
             needs_redraw: false,
+            has_drawn_frame: false,
             last_frame_stats: None,
         })
     }
@@ -989,6 +999,7 @@ impl WgpuRenderer {
             // in draw() after we confirm the surface is healthy. This avoids
             // panics when the device/surface is in an invalid state during resize.
             resources.invalidate_intermediate_textures();
+            self.has_drawn_frame = false;
         }
     }
 
@@ -1048,6 +1059,7 @@ impl WgpuRenderer {
                 path_sample_count,
                 dual_source_blending,
             );
+            self.has_drawn_frame = false;
         }
     }
 
@@ -1080,6 +1092,59 @@ impl WgpuRenderer {
         self.max_texture_size
     }
 
+    fn viewport_bounds(&self) -> Bounds<ScaledPixels> {
+        Bounds::new(
+            Point {
+                x: ScaledPixels(0.0),
+                y: ScaledPixels(0.0),
+            },
+            Size {
+                width: ScaledPixels(self.surface_config.width as f32),
+                height: ScaledPixels(self.surface_config.height as f32),
+            },
+        )
+    }
+
+    fn scissor_rect_for_damage(
+        damage_rects: &[Bounds<ScaledPixels>],
+        surface_width: u32,
+        surface_height: u32,
+    ) -> Option<ScissorRect> {
+        let mut damage_rects = damage_rects.iter();
+        let mut damage_rect = *damage_rects.next()?;
+
+        for rect in damage_rects {
+            damage_rect = damage_rect.union(rect);
+        }
+
+        let x = damage_rect.origin.x.0.max(0.0).min(surface_width as f32) as u32;
+        let y = damage_rect.origin.y.0.max(0.0).min(surface_height as f32) as u32;
+        let width = (damage_rect.size.width.0 as u32).min(surface_width.saturating_sub(x));
+        let height = (damage_rect.size.height.0 as u32).min(surface_height.saturating_sub(y));
+
+        if width == 0 || height == 0 {
+            None
+        } else {
+            Some(ScissorRect {
+                x,
+                y,
+                width,
+                height,
+            })
+        }
+    }
+
+    fn apply_scissor_rect(pass: &mut wgpu::RenderPass<'_>, scissor_rect: Option<ScissorRect>) {
+        if let Some(scissor_rect) = scissor_rect {
+            pass.set_scissor_rect(
+                scissor_rect.x,
+                scissor_rect.y,
+                scissor_rect.width,
+                scissor_rect.height,
+            );
+        }
+    }
+
     pub fn draw(&mut self, scene: &Scene) {
         let mut upload_bytes: usize = 0;
         let mut upload_count: u32 = 0;
@@ -1109,6 +1174,7 @@ impl WgpuRenderer {
                 }
                 self.atlas.clear();
                 self.needs_redraw = true;
+                self.has_drawn_frame = false;
                 return;
             } else if self.failed_frame_count > 10 {
                 panic!("Too many consecutive GPU errors. Last error: {error}");
@@ -1116,6 +1182,27 @@ impl WgpuRenderer {
         } else {
             self.failed_frame_count = 0;
         }
+
+        let viewport_bounds = self.viewport_bounds();
+        let full_redraw = !self.has_drawn_frame || scene.full_redraw_needed(viewport_bounds);
+        let scissor_rect = if full_redraw {
+            None
+        } else {
+            let damage_rects = scene.damage_rects();
+            if damage_rects.is_empty() {
+                self.last_frame_stats = Some(GpuFrameStats::default());
+                return;
+            }
+            let Some(scissor_rect) = Self::scissor_rect_for_damage(
+                damage_rects,
+                self.surface_config.width,
+                self.surface_config.height,
+            ) else {
+                self.last_frame_stats = Some(GpuFrameStats::default());
+                return;
+            };
+            Some(scissor_rect)
+        };
 
         self.atlas.before_frame();
 
@@ -1129,6 +1216,7 @@ impl WgpuRenderer {
                 resources
                     .surface
                     .configure(&resources.device, &surface_config);
+                self.has_drawn_frame = false;
                 return;
             }
             wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
@@ -1137,6 +1225,7 @@ impl WgpuRenderer {
                 resources
                     .surface
                     .configure(&resources.device, &surface_config);
+                self.has_drawn_frame = false;
                 return;
             }
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
@@ -1226,13 +1315,18 @@ impl WgpuRenderer {
                     });
 
             {
+                let load = if scissor_rect.is_some() {
+                    wgpu::LoadOp::Load
+                } else {
+                    wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                };
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("main_pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                         view: &frame_view,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            load,
                             store: wgpu::StoreOp::Store,
                         },
                         depth_slice: None,
@@ -1240,6 +1334,7 @@ impl WgpuRenderer {
                     depth_stencil_attachment: None,
                     ..Default::default()
                 });
+                Self::apply_scissor_rect(&mut pass, scissor_rect);
 
                 for batch in scene.batches() {
                     let ok = match batch {
@@ -1297,6 +1392,7 @@ impl WgpuRenderer {
                                 depth_stencil_attachment: None,
                                 ..Default::default()
                             });
+                            Self::apply_scissor_rect(&mut pass, scissor_rect);
 
                             if did_draw {
                                 self.draw_paths_from_intermediate(
@@ -1401,6 +1497,7 @@ impl WgpuRenderer {
                 .queue
                 .submit(std::iter::once(encoder.finish()));
             frame.present();
+            self.has_drawn_frame = true;
             self.last_frame_stats = Some(GpuFrameStats {
                 upload_bytes,
                 upload_count,
@@ -1903,6 +2000,7 @@ impl WgpuRenderer {
     /// surface later without losing cached atlas textures.
     pub fn unconfigure_surface(&mut self) {
         self.surface_configured = false;
+        self.has_drawn_frame = false;
         // Drop intermediate textures since they reference the old surface size.
         if let Some(res) = self.resources.as_mut() {
             res.invalidate_intermediate_textures();
@@ -1959,6 +2057,7 @@ impl WgpuRenderer {
         }
 
         self.surface_configured = true;
+        self.has_drawn_frame = false;
 
         Ok(())
     }
