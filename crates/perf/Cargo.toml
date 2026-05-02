@@ -1,0 +1,12 @@
+[package]
+name = "perf"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+description = "Performance testing utilities for WGPUI"
+
+[lib]
+path = "src/perf.rs"
+
+[lints]
+workspace = true
