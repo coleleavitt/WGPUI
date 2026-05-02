@@ -1,4 +1,4 @@
-use scheduler::Instant;
+use crate::scheduler::Instant;
 use std::{
     any::{TypeId, type_name},
     cell::{BorrowMutError, Cell, Ref, RefCell, RefMut},
@@ -23,7 +23,7 @@ use parking_lot::RwLock;
 use slotmap::SlotMap;
 
 pub use async_context::*;
-use collections::{FxHashMap, FxHashSet, HashMap, VecDeque};
+use crate::collections::{FxHashMap, FxHashSet, HashMap, VecDeque};
 pub use context::*;
 pub use entity_map::*;
 use gpui_util::{ResultExt, debug_panic};

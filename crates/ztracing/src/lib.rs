@@ -6,7 +6,7 @@ pub use tracing::{
 };
 
 #[cfg(not(ztracing))]
-pub use ztracing_macro::instrument;
+pub use gpui_macros::instrument;
 
 #[cfg(ztracing)]
 const MAX_CALLSTACK_DEPTH: u16 = 16;

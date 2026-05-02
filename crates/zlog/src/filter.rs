@@ -1,4 +1,4 @@
-use collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::collections::VecDeque;
 use std::sync::{
     OnceLock, RwLock,

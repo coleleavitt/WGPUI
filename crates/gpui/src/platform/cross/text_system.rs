@@ -4,7 +4,7 @@ use crate::{
     SUBPIXEL_VARIANTS_Y, ShapedGlyph, ShapedRun, SharedString, Size, point, size,
 };
 use anyhow::{Context as _, Ok, Result};
-use collections::HashMap;
+use crate::collections::HashMap;
 use cosmic_text::{
     Attrs, AttrsList, CacheKey, Ellipsize, Family, Font as CosmicTextFont,
     FontFeatures as CosmicFontFeatures, FontSystem, Hinting, ShapeBuffer, ShapeLine, SwashCache,

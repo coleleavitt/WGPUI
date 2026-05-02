@@ -2,7 +2,7 @@ use crate::{
     App, Bounds, Element, ElementId, GlobalElementId, GpuTextureHandle, InspectorElementId,
     IntoElement, LayoutId, ObjectFit, Pixels, Style, StyleRefinement, Styled, Window,
 };
-use refineable::Refineable;
+use crate::refineable::Refineable;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

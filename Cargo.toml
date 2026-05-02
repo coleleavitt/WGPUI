@@ -1,30 +1,20 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/collections",
     "crates/gpui",
     "crates/gpui_linux",
     "crates/gpui_macos",
     "crates/gpui_macros",
     "crates/gpui_platform",
-    "crates/gpui_shared_string",
-    "crates/gpui_tokio",
     "crates/gpui_util",
     "crates/gpui_web",
     "crates/gpui_wgpu",
     "crates/gpui_windows",
     "crates/http_client",
-    "crates/media",
-    "crates/perf",
-    "crates/refineable",
-    "crates/refineable/derive_refineable",
-    "crates/scheduler",
     "crates/sum_tree",
     "crates/util",
-    "crates/util_macros",
     "crates/zlog",
     "crates/ztracing",
-    "crates/ztracing_macro",
 ]
 default-members = ["crates/gpui"]
 
@@ -38,30 +28,20 @@ edition = "2024"
 # Workspace member crates
 #
 
-collections = { path = "crates/collections", version = "0.1.0" }
-derive_refineable = { path = "crates/refineable/derive_refineable" }
 gpui = { path = "crates/gpui", default-features = false }
 gpui_linux = { path = "crates/gpui_linux", default-features = false }
 gpui_macos = { path = "crates/gpui_macos", default-features = false }
 gpui_macros = { path = "crates/gpui_macros" }
 gpui_platform = { path = "crates/gpui_platform", default-features = false }
-gpui_shared_string = { path = "crates/gpui_shared_string" }
-gpui_tokio = { path = "crates/gpui_tokio" }
 gpui_util = { path = "crates/gpui_util" }
 gpui_web = { path = "crates/gpui_web" }
 gpui_wgpu = { path = "crates/gpui_wgpu" }
 gpui_windows = { path = "crates/gpui_windows", default-features = false }
 http_client = { path = "crates/http_client" }
-media = { path = "crates/media" }
-perf = { path = "crates/perf" }
-refineable = { path = "crates/refineable" }
-scheduler = { path = "crates/scheduler" }
 sum_tree = { path = "crates/sum_tree" }
 util = { path = "crates/util" }
-util_macros = { path = "crates/util_macros" }
 zlog = { path = "crates/zlog" }
 ztracing = { path = "crates/ztracing" }
-ztracing_macro = { path = "crates/ztracing_macro" }
 
 #
 # External crates
@@ -276,8 +256,6 @@ debug = true
 
 [profile.dev.package]
 gpui_macros = { opt-level = 3 }
-derive_refineable = { opt-level = 3 }
-util_macros = { opt-level = 3 }
 quote = { opt-level = 3 }
 syn = { opt-level = 3 }
 proc-macro2 = { opt-level = 3 }

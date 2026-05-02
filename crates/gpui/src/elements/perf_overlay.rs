@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use crate::perf;
 use crate::{
     App, IntoElement, ParentElement, RenderOnce, SharedString, Styled, Window, div, rgba, white,
 };

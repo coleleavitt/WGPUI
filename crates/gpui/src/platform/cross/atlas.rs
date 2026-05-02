@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use collections::FxHashMap;
+use crate::collections::FxHashMap;
 use etagere::BucketedAtlasAllocator;
 use parking_lot::Mutex;
 

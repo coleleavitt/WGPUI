@@ -1564,7 +1564,7 @@ mod tests {
     use crate::rel_path::rel_path;
 
     use super::*;
-    use util_macros::perf;
+    use gpui_macros::perf;
 
     fn rel_path_entry(path: &'static str, is_file: bool) -> (&'static RelPath, bool) {
         (RelPath::unix(path).unwrap(), is_file)

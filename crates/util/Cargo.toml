@@ -15,12 +15,11 @@ path = "src/util.rs"
 doctest = true
 
 [features]
-test-support = ["git2", "rand", "util_macros"]
+test-support = ["git2", "rand", "gpui_macros"]
 
 [dependencies]
 anyhow.workspace = true
 async_zip.workspace = true
-collections.workspace = true
 dunce.workspace = true
 futures-lite.workspace = true
 futures.workspace = true
@@ -30,6 +29,7 @@ log.workspace = true
 rand = { workspace = true, optional = true }
 regex.workspace = true
 rust-embed.workspace = true
+rustc-hash.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -40,7 +40,7 @@ tempfile.workspace = true
 unicase.workspace = true
 url.workspace = true
 percent-encoding.workspace = true
-util_macros = { workspace = true, optional = true }
+gpui_macros = { workspace = true, optional = true }
 gpui_util.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
@@ -65,5 +65,5 @@ tendril = "0.4.3"
 [dev-dependencies]
 git2.workspace = true
 rand.workspace = true
-util_macros.workspace = true
+gpui_macros.workspace = true
 pretty_assertions.workspace = true

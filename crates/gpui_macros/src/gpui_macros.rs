@@ -1,12 +1,14 @@
 mod derive_action;
 mod derive_app_context;
 mod derive_into_element;
+mod derive_refineable;
 mod derive_render;
 mod derive_visual_context;
 mod property_test;
 mod register_action;
 mod styles;
 mod test;
+mod util_macros;
 
 #[cfg(any(feature = "inspector", debug_assertions))]
 mod derive_inspector_reflection;
@@ -294,4 +296,34 @@ pub(crate) fn get_simple_attribute_field(ast: &DeriveInput, name: &'static str) 
         syn::Data::Enum(_) => None,
         syn::Data::Union(_) => None,
     }
+}
+
+#[proc_macro_derive(Refineable, attributes(refineable))]
+pub fn derive_refineable(input: TokenStream) -> TokenStream {
+    derive_refineable::derive_refineable(input)
+}
+
+#[proc_macro]
+pub fn path(input: TokenStream) -> TokenStream {
+    util_macros::path_impl(input)
+}
+
+#[proc_macro]
+pub fn uri(input: TokenStream) -> TokenStream {
+    util_macros::uri_impl(input)
+}
+
+#[proc_macro]
+pub fn line_endings(input: TokenStream) -> TokenStream {
+    util_macros::line_endings_impl(input)
+}
+
+#[proc_macro_attribute]
+pub fn perf(args: TokenStream, input: TokenStream) -> TokenStream {
+    util_macros::perf_impl(args, input)
+}
+
+#[proc_macro_attribute]
+pub fn instrument(_args: TokenStream, input: TokenStream) -> TokenStream {
+    input
 }

@@ -27,7 +27,7 @@ fn device_button_to_gpui(button: u32) -> Option<MouseButton> {
     }
 }
 use anyhow::Result;
-use collections::FxHashMap;
+use crate::collections::FxHashMap;
 use std::{cell::Cell, rc::Rc, sync::Arc, time::Instant};
 use winit::event_loop::ActiveEventLoop;
 

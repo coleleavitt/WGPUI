@@ -97,7 +97,7 @@ pub struct GpuFrameStats {
     pub upload_bytes: usize,
     pub upload_count: u32,
     pub draw_call_count: u32,
-    pub primitive_counts: perf::PrimitiveCounts,
+    pub primitive_counts: gpui::perf::PrimitiveCounts,
 }
 
 struct WgpuPipelines {
@@ -1422,7 +1422,7 @@ impl WgpuRenderer {
         let mut upload_bytes: usize = 0;
         let mut upload_count: u32 = 0;
         let mut draw_call_count: u32 = 0;
-        let mut primitive_counts = perf::PrimitiveCounts::default();
+        let mut primitive_counts = gpui::perf::PrimitiveCounts::default();
 
         // Bail out early if the surface has been unconfigured (e.g. during
         // Android background/rotation transitions).  Attempting to acquire

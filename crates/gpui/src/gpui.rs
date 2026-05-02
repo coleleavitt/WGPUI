@@ -3,7 +3,6 @@
 #![allow(clippy::type_complexity)] // Not useful, GPUI makes heavy use of callbacks
 #![allow(clippy::collapsible_else_if)] // False positives in platform specific code
 #![allow(unused_mut)] // False positives in platform specific code
-
 extern crate self as gpui;
 #[doc(hidden)]
 pub static GPUI_MANIFEST_DIR: &'static str = env!("CARGO_MANIFEST_DIR");
@@ -17,6 +16,7 @@ mod assets;
 mod bounds_tree;
 mod color;
 /// The default colors used by GPUI.
+pub mod collections;
 pub mod colors;
 mod element;
 mod elements;
@@ -26,16 +26,21 @@ pub(crate) use platform_scheduler::PlatformScheduler;
 mod geometry;
 mod global;
 mod gpu_texture;
+pub mod gpui_tokio;
 mod input;
 mod inspector;
 mod interactive;
 mod key_dispatch;
 mod keymap;
+pub mod media;
 mod path_builder;
+pub mod perf;
 mod platform;
 pub mod prelude;
 /// Profiling utilities for task timing and thread performance tracking.
 pub mod profiler;
+pub mod refineable;
+pub mod scheduler;
 #[cfg(any(target_os = "windows", target_os = "linux", target_family = "wasm"))]
 #[expect(missing_docs)]
 pub mod queue;
@@ -93,7 +98,8 @@ pub use gpu_texture::*;
 pub use gpui_macros::{
     AppContext, IntoElement, Render, VisualContext, property_test, register_action, test,
 };
-pub use gpui_shared_string::*;
+mod shared_string;
+pub use shared_string::*;
 pub use gpui_util::arc_cow::ArcCow;
 pub use http_client;
 pub use input::*;

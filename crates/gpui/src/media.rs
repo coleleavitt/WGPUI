@@ -7,7 +7,7 @@ mod bindings;
 pub mod core_media {
     #![allow(non_snake_case)]
 
-    pub use crate::bindings::{
+    pub use super::bindings::{
         CMItemIndex, CMSampleTimingInfo, CMTime, CMTimeMake, CMVideoCodecType,
         kCMSampleAttachmentKey_NotSync, kCMTimeInvalid, kCMVideoCodecType_H264,
     };
@@ -222,8 +222,8 @@ pub mod core_video {
     #[cfg(target_os = "macos")]
     use std::ffi::c_void;
 
-    use crate::bindings::{CVReturn, kCVReturnSuccess};
-    pub use crate::bindings::{
+    use super::bindings::{CVReturn, kCVReturnSuccess};
+    pub use super::bindings::{
         kCVPixelFormatType_32BGRA, kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
         kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, kCVPixelFormatType_420YpCbCr8Planar,
     };

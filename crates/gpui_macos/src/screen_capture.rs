@@ -5,7 +5,7 @@ use cocoa::{
     base::{YES, id, nil},
     foundation::NSArray,
 };
-use collections::HashMap;
+use gpui::collections::HashMap;
 use core_foundation::base::TCFType;
 use core_graphics::display::{
     CGDirectDisplayID, CGDisplayCopyDisplayMode, CGDisplayModeGetPixelHeight,
@@ -17,7 +17,7 @@ use gpui::{
     DevicePixels, ForegroundExecutor, ScreenCaptureFrame, ScreenCaptureSource, ScreenCaptureStream,
     SharedString, SourceMetadata, size,
 };
-use media::core_media::{CMSampleBuffer, CMSampleBufferRef};
+use gpui::media::core_media::{CMSampleBuffer, CMSampleBufferRef};
 use metal::NSInteger;
 use objc::{
     class,

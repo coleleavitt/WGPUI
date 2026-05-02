@@ -10,7 +10,7 @@ use crate::{
     IsZero, LayoutId, ListSizingBehavior, Overflow, Pixels, Point, ScrollHandle, Size,
     StyleRefinement, Styled, Window, point, size,
 };
-use collections::FxHashMap;
+use crate::collections::FxHashMap;
 
 const ITEM_CACHE_BUFFER: usize = 20;
 use smallvec::SmallVec;

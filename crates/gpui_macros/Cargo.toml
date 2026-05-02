@@ -11,6 +11,7 @@ workspace = true
 
 [features]
 inspector = []
+perf-enabled = []
 
 [lib]
 path = "src/gpui_macros.rs"

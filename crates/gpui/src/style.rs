@@ -11,8 +11,8 @@ use crate::{
     PointRefinement, Rgba, SharedString, Size, SizeRefinement, Styled, TextRun, Window, black, phi,
     point, quad, rems, size,
 };
-use collections::HashSet;
-use refineable::Refineable;
+use crate::collections::HashSet;
+use crate::refineable::Refineable;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -1289,7 +1289,7 @@ mod tests {
 
     use super::*;
 
-    use util_macros::perf;
+    use gpui_macros::perf;
 
     #[perf]
     fn test_basic_highlight_style_combination() {

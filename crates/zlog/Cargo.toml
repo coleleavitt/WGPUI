@@ -15,10 +15,10 @@ path = "src/zlog.rs"
 default = []
 
 [dependencies]
-collections.workspace = true
 chrono.workspace = true
 log.workspace = true
 anyhow.workspace = true
+rustc-hash.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
