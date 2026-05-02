@@ -334,8 +334,8 @@ and skip entire subtrees that haven't changed. Currently `draw_roots()` walks
 the ENTIRE element tree even if only one leaf changed.
 
 #### 4.1 Subtree Skip During Prepaint
-- [ ] During `DrawPhase::Prepaint`, check if a view is in `dirty_views`
-- [ ] If not dirty AND all descendants are not dirty: skip entire subtree
+- [x] During `DrawPhase::Prepaint`, check if a view is in `dirty_views`
+- [x] If not dirty AND all descendants are not dirty: skip entire subtree
   (currently `reuse_prepaint` replays — goal is to skip entirely)
 - [ ] Requires knowing if ANY descendant is dirty — extend `mark_view_dirty()`
   to propagate a "has_dirty_descendant" flag up the tree
@@ -348,13 +348,13 @@ the ENTIRE element tree even if only one leaf changed.
 - `crates/gpui/src/element.rs` — `Element::prepaint` skip path
 
 #### 4.2 Subtree Skip During Paint
-- [ ] Same skip logic for `DrawPhase::Paint`
-- [ ] Clean subtrees don't generate ANY new `PaintOperation`s
+- [x] Same skip logic for `DrawPhase::Paint`
+- [x] Clean subtrees don't generate ANY new `PaintOperation`s
 - [ ] Their data persists in the persistent scene (Phase 1)
 
 #### 4.3 Layout Caching
-- [ ] Cache taffy layout results per view
-- [ ] If a view's input constraints haven't changed AND it's not dirty,
+- [x] Cache taffy layout results per view
+- [x] If a view's input constraints haven't changed AND it's not dirty,
   reuse cached layout (don't call taffy at all)
 - [ ] Invalidate layout cache when:
   - View is dirty (content changed)
