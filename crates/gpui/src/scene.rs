@@ -121,6 +121,7 @@ pub struct Scene {
     pub(crate) active_chunk: Option<usize>,
     pub(crate) chunk_map: FxHashMap<EntityId, usize>,
     pub(crate) generation: u64,
+    batch_count: u32,
 }
 
 #[expect(missing_docs)]
@@ -141,6 +142,7 @@ impl Scene {
         self.chunks.clear();
         self.active_chunk = None;
         self.chunk_map.clear();
+        self.batch_count = 0;
     }
 
     pub fn begin_view_chunk(&mut self, view_id: EntityId) {
@@ -196,6 +198,10 @@ impl Scene {
 
     pub fn dirty_chunk_count(&self) -> usize {
         self.chunks.iter().filter(|chunk| chunk.dirty).count()
+    }
+
+    pub fn batch_count(&self) -> u32 {
+        self.batch_count
     }
 
     pub fn has_changes(&self) -> bool {
@@ -333,16 +339,16 @@ impl Scene {
                 }
 
                 if let Some(shadows) = self.shadows.get_mut(chunk.shadows.clone()) {
-                    shadows.sort_by_key(|shadow| shadow.order);
+                    shadows.sort_by_key(|shadow| (shadow.order, PrimitiveKind::Shadow));
                 }
                 if let Some(quads) = self.quads.get_mut(chunk.quads.clone()) {
-                    quads.sort_by_key(|quad| quad.order);
+                    quads.sort_by_key(|quad| (quad.order, PrimitiveKind::Quad));
                 }
                 if let Some(paths) = self.paths.get_mut(chunk.paths.clone()) {
-                    paths.sort_by_key(|path| path.order);
+                    paths.sort_by_key(|path| (path.order, PrimitiveKind::Path));
                 }
                 if let Some(underlines) = self.underlines.get_mut(chunk.underlines.clone()) {
-                    underlines.sort_by_key(|underline| underline.order);
+                    underlines.sort_by_key(|underline| (underline.order, PrimitiveKind::Underline));
                 }
                 if let Some(monochrome_sprites) = self
                     .monochrome_sprites
@@ -363,11 +369,12 @@ impl Scene {
                     polychrome_sprites.sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
                 }
                 if let Some(surfaces) = self.surfaces.get_mut(chunk.surfaces.clone()) {
-                    surfaces.sort_by_key(|surface| surface.order);
+                    surfaces.sort_by_key(|surface| (surface.order, PrimitiveKind::Surface));
                 }
             }
         }
 
+        self.batch_count = self.total_batch_count();
         self.generation += 1;
     }
 
@@ -488,17 +495,22 @@ impl Scene {
     }
 
     fn sort_all_primitives(&mut self) {
-        self.shadows.sort_by_key(|shadow| shadow.order);
-        self.quads.sort_by_key(|quad| quad.order);
-        self.paths.sort_by_key(|path| path.order);
-        self.underlines.sort_by_key(|underline| underline.order);
+        self.shadows
+            .sort_by_key(|shadow| (shadow.order, PrimitiveKind::Shadow));
+        self.quads
+            .sort_by_key(|quad| (quad.order, PrimitiveKind::Quad));
+        self.paths
+            .sort_by_key(|path| (path.order, PrimitiveKind::Path));
+        self.underlines
+            .sort_by_key(|underline| (underline.order, PrimitiveKind::Underline));
         self.monochrome_sprites
             .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
         self.subpixel_sprites
             .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
         self.polychrome_sprites
             .sort_by_key(|sprite| (sprite.order, sprite.tile.tile_id));
-        self.surfaces.sort_by_key(|surface| surface.order);
+        self.surfaces
+            .sort_by_key(|surface| (surface.order, PrimitiveKind::Surface));
     }
 
     #[cfg_attr(
@@ -527,6 +539,15 @@ impl Scene {
             surfaces_start: 0,
             surfaces_iter: self.surfaces.iter().peekable(),
         }
+    }
+
+    pub fn total_batch_count(&self) -> u32 {
+        let mut counter = BatchCounter::default();
+        let mut count = 0u32;
+        while counter.advance(self) {
+            count = count.saturating_add(1);
+        }
+        count
     }
 }
 
@@ -595,6 +616,178 @@ impl Primitive {
             Primitive::PolychromeSprite(sprite) => &sprite.content_mask,
             Primitive::Surface(surface) => &surface.content_mask,
         }
+    }
+}
+
+#[derive(Default)]
+struct BatchCounter {
+    shadows_index: usize,
+    quads_index: usize,
+    paths_index: usize,
+    underlines_index: usize,
+    monochrome_sprites_index: usize,
+    subpixel_sprites_index: usize,
+    polychrome_sprites_index: usize,
+    surfaces_index: usize,
+}
+
+impl BatchCounter {
+    fn advance(&mut self, scene: &Scene) -> bool {
+        let mut orders_and_kinds = [
+            (
+                scene
+                    .shadows
+                    .get(self.shadows_index)
+                    .map(|shadow| shadow.order),
+                PrimitiveKind::Shadow,
+            ),
+            (
+                scene.quads.get(self.quads_index).map(|quad| quad.order),
+                PrimitiveKind::Quad,
+            ),
+            (
+                scene.paths.get(self.paths_index).map(|path| path.order),
+                PrimitiveKind::Path,
+            ),
+            (
+                scene
+                    .underlines
+                    .get(self.underlines_index)
+                    .map(|underline| underline.order),
+                PrimitiveKind::Underline,
+            ),
+            (
+                scene
+                    .monochrome_sprites
+                    .get(self.monochrome_sprites_index)
+                    .map(|sprite| sprite.order),
+                PrimitiveKind::MonochromeSprite,
+            ),
+            (
+                scene
+                    .subpixel_sprites
+                    .get(self.subpixel_sprites_index)
+                    .map(|sprite| sprite.order),
+                PrimitiveKind::SubpixelSprite,
+            ),
+            (
+                scene
+                    .polychrome_sprites
+                    .get(self.polychrome_sprites_index)
+                    .map(|sprite| sprite.order),
+                PrimitiveKind::PolychromeSprite,
+            ),
+            (
+                scene
+                    .surfaces
+                    .get(self.surfaces_index)
+                    .map(|surface| surface.order),
+                PrimitiveKind::Surface,
+            ),
+        ];
+        orders_and_kinds.sort_by_key(|(order, kind)| (order.unwrap_or(u32::MAX), *kind));
+
+        let first = orders_and_kinds[0];
+        let second = orders_and_kinds[1];
+        let Some(_) = first.0 else {
+            return false;
+        };
+
+        let batch_kind = first.1;
+        let max_order_and_kind = (second.0.unwrap_or(u32::MAX), second.1);
+
+        match batch_kind {
+            PrimitiveKind::Shadow => {
+                self.shadows_index += 1;
+                while let Some(shadow) = scene.shadows.get(self.shadows_index)
+                    && (shadow.order, batch_kind) < max_order_and_kind
+                {
+                    self.shadows_index += 1;
+                }
+            }
+            PrimitiveKind::Quad => {
+                self.quads_index += 1;
+                while let Some(quad) = scene.quads.get(self.quads_index)
+                    && (quad.order, batch_kind) < max_order_and_kind
+                {
+                    self.quads_index += 1;
+                }
+            }
+            PrimitiveKind::Path => {
+                self.paths_index += 1;
+                while let Some(path) = scene.paths.get(self.paths_index)
+                    && (path.order, batch_kind) < max_order_and_kind
+                {
+                    self.paths_index += 1;
+                }
+            }
+            PrimitiveKind::Underline => {
+                self.underlines_index += 1;
+                while let Some(underline) = scene.underlines.get(self.underlines_index)
+                    && (underline.order, batch_kind) < max_order_and_kind
+                {
+                    self.underlines_index += 1;
+                }
+            }
+            PrimitiveKind::MonochromeSprite => {
+                let Some(texture_id) = scene
+                    .monochrome_sprites
+                    .get(self.monochrome_sprites_index)
+                    .map(|sprite| sprite.tile.texture_id)
+                else {
+                    return false;
+                };
+                self.monochrome_sprites_index += 1;
+                while let Some(sprite) = scene.monochrome_sprites.get(self.monochrome_sprites_index)
+                    && (sprite.order, batch_kind) < max_order_and_kind
+                    && sprite.tile.texture_id == texture_id
+                {
+                    self.monochrome_sprites_index += 1;
+                }
+            }
+            PrimitiveKind::SubpixelSprite => {
+                let Some(texture_id) = scene
+                    .subpixel_sprites
+                    .get(self.subpixel_sprites_index)
+                    .map(|sprite| sprite.tile.texture_id)
+                else {
+                    return false;
+                };
+                self.subpixel_sprites_index += 1;
+                while let Some(sprite) = scene.subpixel_sprites.get(self.subpixel_sprites_index)
+                    && (sprite.order, batch_kind) < max_order_and_kind
+                    && sprite.tile.texture_id == texture_id
+                {
+                    self.subpixel_sprites_index += 1;
+                }
+            }
+            PrimitiveKind::PolychromeSprite => {
+                let Some(texture_id) = scene
+                    .polychrome_sprites
+                    .get(self.polychrome_sprites_index)
+                    .map(|sprite| sprite.tile.texture_id)
+                else {
+                    return false;
+                };
+                self.polychrome_sprites_index += 1;
+                while let Some(sprite) = scene.polychrome_sprites.get(self.polychrome_sprites_index)
+                    && (sprite.order, batch_kind) < max_order_and_kind
+                    && sprite.tile.texture_id == texture_id
+                {
+                    self.polychrome_sprites_index += 1;
+                }
+            }
+            PrimitiveKind::Surface => {
+                self.surfaces_index += 1;
+                while let Some(surface) = scene.surfaces.get(self.surfaces_index)
+                    && (surface.order, batch_kind) < max_order_and_kind
+                {
+                    self.surfaces_index += 1;
+                }
+            }
+        }
+
+        true
     }
 }
 
@@ -724,7 +917,10 @@ impl<'a> Iterator for BatchIterator<'a> {
                 Some(PrimitiveBatch::Underlines(underlines_start..underlines_end))
             }
             PrimitiveKind::MonochromeSprite => {
-                let texture_id = self.monochrome_sprites_iter.peek().unwrap().tile.texture_id;
+                let Some(sprite) = self.monochrome_sprites_iter.peek() else {
+                    return None;
+                };
+                let texture_id = sprite.tile.texture_id;
                 let sprites_start = self.monochrome_sprites_start;
                 let mut sprites_end = sprites_start + 1;
                 self.monochrome_sprites_iter.next();
@@ -745,7 +941,10 @@ impl<'a> Iterator for BatchIterator<'a> {
                 })
             }
             PrimitiveKind::SubpixelSprite => {
-                let texture_id = self.subpixel_sprites_iter.peek().unwrap().tile.texture_id;
+                let Some(sprite) = self.subpixel_sprites_iter.peek() else {
+                    return None;
+                };
+                let texture_id = sprite.tile.texture_id;
                 let sprites_start = self.subpixel_sprites_start;
                 let mut sprites_end = sprites_start + 1;
                 self.subpixel_sprites_iter.next();
@@ -766,7 +965,10 @@ impl<'a> Iterator for BatchIterator<'a> {
                 })
             }
             PrimitiveKind::PolychromeSprite => {
-                let texture_id = self.polychrome_sprites_iter.peek().unwrap().tile.texture_id;
+                let Some(sprite) = self.polychrome_sprites_iter.peek() else {
+                    return None;
+                };
+                let texture_id = sprite.tile.texture_id;
                 let sprites_start = self.polychrome_sprites_start;
                 let mut sprites_end = sprites_start + 1;
                 self.polychrome_sprites_iter.next();

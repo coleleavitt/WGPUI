@@ -10,6 +10,9 @@ use crate::{
     IsZero, LayoutId, ListSizingBehavior, Overflow, Pixels, Point, ScrollHandle, Size,
     StyleRefinement, Styled, Window, point, size,
 };
+use collections::FxHashMap;
+
+const ITEM_CACHE_BUFFER: usize = 20;
 use smallvec::SmallVec;
 use std::{cell::RefCell, cmp, ops::Range, rc::Rc, usize};
 
@@ -70,8 +73,17 @@ pub struct UniformList {
 
 /// Frame state used by the [UniformList].
 pub struct UniformListFrameState {
-    items: SmallVec<[AnyElement; 32]>,
+    items: Vec<(usize, AnyElement)>,
     decorations: SmallVec<[AnyElement; 2]>,
+}
+
+#[derive(Default)]
+struct UniformListElementCache {
+    element_cache: FxHashMap<usize, AnyElement>,
+}
+
+fn dynamic_overdraw(scroll_velocity: f32, viewport_height: Pixels) -> Pixels {
+    Pixels(scroll_velocity).min(viewport_height * 2.)
 }
 
 /// A handle for controlling the scroll position of a uniform list.
@@ -119,6 +131,8 @@ pub struct UniformListScrollState {
     pub last_item_size: Option<ItemSize>,
     /// Whether the list was vertically flipped during last layout.
     pub y_flipped: bool,
+    scroll_velocity: f32,
+    last_scroll_offset_y: Option<Pixels>,
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -139,6 +153,8 @@ impl UniformListScrollHandle {
             deferred_scroll_to_item: None,
             last_item_size: None,
             y_flipped: false,
+            scroll_velocity: 0.0,
+            last_scroll_offset_y: None,
         })))
     }
 
@@ -310,7 +326,7 @@ impl Element for UniformList {
         (
             layout_id,
             UniformListFrameState {
-                items: SmallVec::new(),
+                items: Vec::new(),
                 decorations: SmallVec::new(),
             },
         )
@@ -458,28 +474,137 @@ impl Element for UniformList {
                         scroll_offset = *updated_scroll_offset
                     }
 
-                    let first_visible_element_ix =
-                        (-(scroll_offset.y + padding.top) / item_height).floor() as usize;
+                    let scroll_velocity = if let Some(scroll_handle) = &self.scroll_handle {
+                        let mut scroll_state = scroll_handle.0.borrow_mut();
+                        let velocity = scroll_state
+                            .last_scroll_offset_y
+                            .map(|last_scroll_offset_y| {
+                                (scroll_offset.y - last_scroll_offset_y).0.abs()
+                            })
+                            .unwrap_or(0.0)
+                            .max(scroll_state.scroll_velocity * 0.5);
+                        scroll_state.scroll_velocity = if velocity < 1.0 { 0.0 } else { velocity };
+                        scroll_state.last_scroll_offset_y = Some(scroll_offset.y);
+                        scroll_state.scroll_velocity
+                    } else {
+                        0.0
+                    };
+                    let overdraw_items = if item_height.is_zero() {
+                        0
+                    } else {
+                        (dynamic_overdraw(scroll_velocity, padded_bounds.size.height) / item_height)
+                            .ceil()
+                            .max(0.) as usize
+                    };
+
+                    let first_visible_element_ix = (-(scroll_offset.y + padding.top) / item_height)
+                        .floor()
+                        .max(0.) as usize;
                     let last_visible_element_ix = ((-scroll_offset.y + padded_bounds.size.height)
                         / item_height)
-                        .ceil() as usize;
+                        .ceil()
+                        .max(0.) as usize;
 
-                    let visible_range = first_visible_element_ix
-                        ..cmp::min(last_visible_element_ix, self.item_count);
+                    let visible_range = first_visible_element_ix.saturating_sub(overdraw_items)
+                        ..cmp::min(
+                            last_visible_element_ix.saturating_add(overdraw_items),
+                            self.item_count,
+                        );
 
-                    let items = if y_flipped {
+                    let cache_range = if y_flipped {
                         let flipped_range = self.item_count.saturating_sub(visible_range.end)
                             ..self.item_count.saturating_sub(visible_range.start);
-                        let mut items = (self.render_items)(flipped_range, window, cx);
+                        flipped_range.rev().collect::<Vec<_>>()
+                    } else {
+                        visible_range.clone().collect::<Vec<_>>()
+                    };
+
+                    let items = if let Some(global_id) = global_id {
+                        window.with_element_state::<UniformListElementCache, _>(
+                            global_id,
+                            |cache, window| {
+                                let mut cache = cache.unwrap_or_default();
+                                let cache_start = cache_range
+                                    .iter()
+                                    .copied()
+                                    .min()
+                                    .unwrap_or(0)
+                                    .saturating_sub(ITEM_CACHE_BUFFER);
+                                let cache_end = cache_range
+                                    .iter()
+                                    .copied()
+                                    .max()
+                                    .map(|index| index.saturating_add(ITEM_CACHE_BUFFER + 1))
+                                    .unwrap_or(0)
+                                    .min(self.item_count);
+                                cache
+                                    .element_cache
+                                    .retain(|index, _| (cache_start..cache_end).contains(index));
+
+                                let mut missing_range_start = None;
+                                for item_index in cache_start..cache_end {
+                                    if !cache_range.contains(&item_index) {
+                                        continue;
+                                    }
+
+                                    if cache.element_cache.contains_key(&item_index) {
+                                        if let Some(start) = missing_range_start.take() {
+                                            let elements =
+                                                (self.render_items)(start..item_index, window, cx);
+                                            for (index, element) in
+                                                (start..item_index).zip(elements)
+                                            {
+                                                cache.element_cache.insert(index, element);
+                                            }
+                                        }
+                                    } else if missing_range_start.is_none() {
+                                        missing_range_start = Some(item_index);
+                                    }
+                                }
+                                if let Some(start) = missing_range_start {
+                                    let end = cache_end.min(self.item_count);
+                                    let elements = (self.render_items)(start..end, window, cx);
+                                    for (index, element) in (start..end).zip(elements) {
+                                        if cache_range.contains(&index) {
+                                            cache.element_cache.insert(index, element);
+                                        }
+                                    }
+                                }
+
+                                let items = cache_range
+                                    .iter()
+                                    .copied()
+                                    .filter_map(|index| {
+                                        cache
+                                            .element_cache
+                                            .remove(&index)
+                                            .map(|element| (index, element))
+                                    })
+                                    .collect::<Vec<_>>();
+                                (items, cache)
+                            },
+                        )
+                    } else if y_flipped {
+                        let flipped_range = self.item_count.saturating_sub(visible_range.end)
+                            ..self.item_count.saturating_sub(visible_range.start);
+                        let mut items = (self.render_items)(flipped_range, window, cx)
+                            .into_iter()
+                            .collect::<Vec<_>>();
                         items.reverse();
-                        items
+                        cache_range.iter().copied().zip(items).collect()
                     } else {
                         (self.render_items)(visible_range.clone(), window, cx)
+                            .into_iter()
+                            .enumerate()
+                            .map(|(offset, element)| (visible_range.start + offset, element))
+                            .collect()
                     };
 
                     let content_mask = ContentMask { bounds };
                     window.with_content_mask(Some(content_mask), |window| {
-                        for (mut item, ix) in items.into_iter().zip(visible_range.clone()) {
+                        for ((cache_index, mut item), ix) in
+                            items.into_iter().zip(visible_range.clone())
+                        {
                             let item_origin = padded_bounds.origin
                                 + scroll_offset
                                 + point(Pixels::ZERO, item_height * ix);
@@ -495,7 +620,7 @@ impl Element for UniformList {
                             );
                             item.layout_as_root(available_space, window, cx);
                             item.prepaint_at(item_origin, window, cx);
-                            frame_state.items.push(item);
+                            frame_state.items.push((cache_index, item));
                         }
 
                         let bounds =
@@ -544,14 +669,24 @@ impl Element for UniformList {
             window,
             cx,
             |_, window, cx| {
-                for item in &mut request_layout.items {
+                for (_, item) in &mut request_layout.items {
                     item.paint(window, cx);
                 }
                 for decoration in &mut request_layout.decorations {
                     decoration.paint(window, cx);
                 }
             },
-        )
+        );
+
+        if let Some(global_id) = global_id {
+            window.with_element_state::<UniformListElementCache, _>(global_id, |cache, _| {
+                let mut cache = cache.unwrap_or_default();
+                for (index, item) in request_layout.items.drain(..) {
+                    cache.element_cache.insert(index, item);
+                }
+                ((), cache)
+            });
+        }
     }
 }
 

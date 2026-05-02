@@ -204,7 +204,7 @@ impl PersistentTypeBuffer {
                 .end
                 .saturating_mul(element_size)
                 .min(full_data.len());
-            if byte_start < byte_end && byte_end <= full_data.len() {
+            if byte_start < byte_end && byte_end <= full_data.len() && byte_end <= self.capacity {
                 queue.write_buffer(&self.buffer, byte_start as u64, &full_data[byte_start..byte_end]);
                 bytes_uploaded = bytes_uploaded.saturating_add(byte_end - byte_start);
             }
@@ -218,6 +218,10 @@ impl PersistentTypeBuffer {
             offset: offset as u64,
             size: NonZeroU64::new(size.max(16) as u64),
         })
+    }
+
+    fn full_binding(&self) -> wgpu::BindingResource<'_> {
+        self.binding(0, self.len)
     }
 }
 
@@ -282,7 +286,11 @@ fn upload_persistent_instances<T>(
     upload_bytes: &mut usize,
     upload_count: &mut u32,
 ) {
-    let data = unsafe { std::slice::from_raw_parts(instances.as_ptr() as *const u8, size_of_val(instances)) };
+    // SAFETY: This mirrors WgpuRenderer::instance_bytes; these primitive structs are encoded
+    // directly into storage buffers and decoded by matching WGSL structs.
+    let data = unsafe {
+        std::slice::from_raw_parts(instances.as_ptr() as *const u8, size_of_val(instances))
+    };
     if instances.len() != *last_len || (generation_changed && changed_ranges.is_empty()) {
         buffer.upload_full(device, queue, data, label);
         *last_len = instances.len();
@@ -1883,7 +1891,6 @@ impl WgpuRenderer {
     ) -> bool {
         self.draw_persistent_instances(
             range,
-            size_of::<Quad>(),
             &self.persistent_buffers.quads,
             &self.resources().pipelines.quads,
             pass,
@@ -1899,7 +1906,6 @@ impl WgpuRenderer {
     ) -> bool {
         self.draw_persistent_instances(
             range,
-            size_of::<Shadow>(),
             &self.persistent_buffers.shadows,
             &self.resources().pipelines.shadows,
             pass,
@@ -1915,7 +1921,6 @@ impl WgpuRenderer {
     ) -> bool {
         self.draw_persistent_instances(
             range,
-            size_of::<Underline>(),
             &self.persistent_buffers.underlines,
             &self.resources().pipelines.underlines,
             pass,
@@ -1933,7 +1938,6 @@ impl WgpuRenderer {
         let tex_info = self.atlas.get_texture_info(texture_id);
         self.draw_persistent_instances_with_texture(
             range,
-            size_of::<MonochromeSprite>(),
             &self.persistent_buffers.monochrome_sprites,
             &tex_info.view,
             &self.resources().pipelines.mono_sprites,
@@ -1958,7 +1962,6 @@ impl WgpuRenderer {
             .unwrap_or(&resources.pipelines.mono_sprites);
         self.draw_persistent_instances_with_texture(
             range,
-            size_of::<SubpixelSprite>(),
             &self.persistent_buffers.subpixel_sprites,
             &tex_info.view,
             pipeline,
@@ -1977,7 +1980,6 @@ impl WgpuRenderer {
         let tex_info = self.atlas.get_texture_info(texture_id);
         self.draw_persistent_instances_with_texture(
             range,
-            size_of::<PolychromeSprite>(),
             &self.persistent_buffers.polychrome_sprites,
             &tex_info.view,
             &self.resources().pipelines.poly_sprites,
@@ -1989,7 +1991,6 @@ impl WgpuRenderer {
     fn draw_persistent_instances(
         &self,
         range: Range<usize>,
-        element_size: usize,
         buffer: &PersistentTypeBuffer,
         pipeline: &wgpu::RenderPipeline,
         pass: &mut wgpu::RenderPass<'_>,
@@ -2000,8 +2001,6 @@ impl WgpuRenderer {
             return true;
         }
 
-        let byte_offset = range.start.saturating_mul(element_size);
-        let byte_size = range.len().saturating_mul(element_size);
         let resources = self.resources();
         let bind_group = resources
             .device
@@ -2010,13 +2009,13 @@ impl WgpuRenderer {
                 layout: &resources.bind_group_layouts.instances,
                 entries: &[wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: buffer.binding(byte_offset, byte_size),
+                    resource: buffer.full_binding(),
                 }],
             });
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &resources.globals_bind_group, &[]);
         pass.set_bind_group(1, &bind_group, &[]);
-        pass.draw(0..4, 0..instance_count);
+        pass.draw(0..4, range.start as u32..range.end as u32);
         *draw_call_count = draw_call_count.saturating_add(1);
         true
     }
@@ -2024,7 +2023,6 @@ impl WgpuRenderer {
     fn draw_persistent_instances_with_texture(
         &self,
         range: Range<usize>,
-        element_size: usize,
         buffer: &PersistentTypeBuffer,
         texture_view: &wgpu::TextureView,
         pipeline: &wgpu::RenderPipeline,
@@ -2036,8 +2034,6 @@ impl WgpuRenderer {
             return true;
         }
 
-        let byte_offset = range.start.saturating_mul(element_size);
-        let byte_size = range.len().saturating_mul(element_size);
         let resources = self.resources();
         let bind_group = resources
             .device
@@ -2047,7 +2043,7 @@ impl WgpuRenderer {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: buffer.binding(byte_offset, byte_size),
+                        resource: buffer.full_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
@@ -2062,7 +2058,7 @@ impl WgpuRenderer {
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &resources.globals_bind_group, &[]);
         pass.set_bind_group(1, &bind_group, &[]);
-        pass.draw(0..4, 0..instance_count);
+        pass.draw(0..4, range.start as u32..range.end as u32);
         *draw_call_count = draw_call_count.saturating_add(1);
         true
     }

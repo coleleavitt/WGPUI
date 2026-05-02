@@ -388,17 +388,17 @@ the ENTIRE element tree even if only one leaf changed.
 **Risk**: Low
 
 #### 5.1 Element Cache for uniform_list
-- [ ] Cache `AnyElement` instances across frames for visible items
-- [ ] When scroll position changes, reuse elements that are still visible
-- [ ] Only create new elements for items entering the viewport
-- [ ] Destroy elements for items leaving the viewport
+- [x] Cache `AnyElement` instances across frames for visible items
+- [x] When scroll position changes, reuse elements that are still visible
+- [x] Only create new elements for items entering the viewport
+- [x] Destroy elements for items leaving the viewport
 
 **Files to modify**:
 - `crates/gpui/src/elements/uniform_list.rs`
 
 #### 5.2 Element Cache for list (Variable-Height)
-- [ ] Same caching for `list.rs` but respecting height changes
-- [ ] `SumTree<ListItem>` already tracks `Rendered { element }` vs
+- [x] Same caching for `list.rs` but respecting height changes
+- [x] `SumTree<ListItem>` already tracks `Rendered { element }` vs
   `Unrendered { height }` — extend to keep rendered elements longer
 - [ ] Tune `overdraw` parameter: profile to find optimal value
   (currently hardcoded, should be adaptive based on scroll velocity)
@@ -407,7 +407,7 @@ the ENTIRE element tree even if only one leaf changed.
 - `crates/gpui/src/elements/list.rs`
 
 #### 5.3 Hybrid Overdraw
-- [ ] Implement velocity-based overdraw: fast scroll = more overdraw,
+- [x] Implement velocity-based overdraw: fast scroll = more overdraw,
   slow/stopped scroll = less overdraw
 - [ ] Cap overdraw at 2x viewport height
 
@@ -425,8 +425,8 @@ the ENTIRE element tree even if only one leaf changed.
 **Risk**: Low
 
 #### 6.1 Sort Primitives to Maximize Batching
-- [ ] Currently `PrimitiveBatch` merges consecutive same-type primitives
-- [ ] If two quad batches are separated by a single underline, that's 3 draw
+- [x] Currently `PrimitiveBatch` merges consecutive same-type primitives
+- [x] If two quad batches are separated by a single underline, that's 3 draw
   calls instead of potentially 2 (if underline could be reordered)
 - [ ] Profile to measure actual batch count in typical UIs
 - [ ] If batch count is high (> 50 per frame), investigate sort key

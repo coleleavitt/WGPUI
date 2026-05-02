@@ -66,6 +66,8 @@ struct StateInner {
     logical_scroll_top: Option<ListOffset>,
     alignment: ListAlignment,
     overdraw: Pixels,
+    scroll_velocity: f32,
+    cache_budget: usize,
     reset: bool,
     #[allow(clippy::type_complexity)]
     scroll_handler: Option<Box<dyn FnMut(&ListScrollEvent, &mut Window, &mut App)>>,
@@ -209,7 +211,10 @@ struct ItemLayout {
     index: usize,
     element: AnyElement,
     size: Size<Pixels>,
+    element_cache: CachedListElement,
 }
+
+type CachedListElement = Rc<RefCell<Option<AnyElement>>>;
 
 /// Frame state used by the [List] element after layout.
 pub struct ListPrepaintState {
@@ -226,6 +231,7 @@ enum ListItem {
     Measured {
         size: Size<Pixels>,
         focus_handle: Option<FocusHandle>,
+        element_cache: Option<CachedListElement>,
     },
 }
 
@@ -262,6 +268,13 @@ impl ListItem {
             }
         }
     }
+
+    fn element_cache(&self) -> Option<CachedListElement> {
+        match self {
+            ListItem::Measured { element_cache, .. } => element_cache.clone(),
+            ListItem::Unmeasured { .. } => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -294,6 +307,8 @@ impl ListState {
             logical_scroll_top: None,
             alignment,
             overdraw,
+            scroll_velocity: 0.0,
+            cache_budget: 200,
             scroll_handler: None,
             reset: false,
             scrollbar_drag_start_height: None,
@@ -675,6 +690,40 @@ impl ListState {
 }
 
 impl StateInner {
+    fn evict_cached_elements(&mut self, visible_range: Range<usize>) {
+        let mut cached_items = self
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                item.element_cache().and_then(|element_cache| {
+                    if element_cache.borrow().is_some() {
+                        let distance = if index < visible_range.start {
+                            visible_range.start - index
+                        } else if index >= visible_range.end {
+                            index - visible_range.end + 1
+                        } else {
+                            0
+                        };
+                        Some((distance, element_cache))
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+
+        if cached_items.len() <= self.cache_budget {
+            return;
+        }
+
+        cached_items.sort_by_key(|(distance, _)| std::cmp::Reverse(*distance));
+        let evict_count = cached_items.len() - self.cache_budget;
+        for (_, element_cache) in cached_items.into_iter().take(evict_count) {
+            element_cache.borrow_mut().take();
+        }
+    }
+
     fn max_scroll_offset(&self) -> Pixels {
         let bounds = self.last_layout_bounds.unwrap_or_default();
         let height = self
@@ -814,6 +863,7 @@ impl StateInner {
             measured_items.push(ListItem::Measured {
                 size,
                 focus_handle: item.focus_handle(),
+                element_cache: None,
             });
         }
 
@@ -845,6 +895,11 @@ impl StateInner {
         }
 
         let mut rendered_focused_item = false;
+        let overdraw = (self.overdraw + px(self.scroll_velocity)).min(available_height * 2.);
+        self.scroll_velocity *= 0.5;
+        if self.scroll_velocity < 1.0 {
+            self.scroll_velocity = 0.0;
+        }
 
         let available_item_space = size(
             available_width.map_or(AvailableSpace::MinContent, |width| {
@@ -859,7 +914,7 @@ impl StateInner {
         cursor.seek(&Count(scroll_top.item_ix), Bias::Right);
         for (ix, item) in cursor.by_ref().enumerate() {
             let visible_height = rendered_height - scroll_top.offset_in_item;
-            if visible_height >= available_height + self.overdraw {
+            if visible_height >= available_height + overdraw {
                 break;
             }
 
@@ -869,7 +924,11 @@ impl StateInner {
             // If we're within the visible area or the height wasn't cached, render and measure the item's element
             if visible_height < available_height || size.is_none() {
                 let item_index = scroll_top.item_ix + ix;
-                let mut element = render_item(item_index, window, cx);
+                let element_cache = item.element_cache().unwrap_or_default();
+                let mut cached_element = element_cache.borrow_mut().take();
+                let mut element = cached_element
+                    .take()
+                    .unwrap_or_else(|| render_item(item_index, window, cx));
                 let element_size = element.layout_as_root(available_item_space, window, cx);
                 size = Some(element_size);
 
@@ -891,10 +950,13 @@ impl StateInner {
                         index: item_index,
                         element,
                         size: element_size,
+                        element_cache: element_cache.clone(),
                     });
                     if item.contains_focused(window, cx) {
                         rendered_focused_item = true;
                     }
+                } else {
+                    *element_cache.borrow_mut() = Some(element);
                 }
             }
 
@@ -904,6 +966,7 @@ impl StateInner {
             measured_items.push_back(ListItem::Measured {
                 size,
                 focus_handle: item.focus_handle(),
+                element_cache: item.element_cache(),
             });
         }
         rendered_height += padding.bottom;
@@ -918,18 +981,24 @@ impl StateInner {
                 cursor.prev();
                 if let Some(item) = cursor.item() {
                     let item_index = cursor.start().0;
-                    let mut element = render_item(item_index, window, cx);
+                    let element_cache = item.element_cache().unwrap_or_default();
+                    let mut cached_element = element_cache.borrow_mut().take();
+                    let mut element = cached_element
+                        .take()
+                        .unwrap_or_else(|| render_item(item_index, window, cx));
                     let element_size = element.layout_as_root(available_item_space, window, cx);
                     let focus_handle = item.focus_handle();
                     rendered_height += element_size.height;
                     measured_items.push_front(ListItem::Measured {
                         size: element_size,
                         focus_handle,
+                        element_cache: Some(element_cache.clone()),
                     });
                     item_layouts.push_front(ItemLayout {
                         index: item_index,
                         element,
                         size: element_size,
+                        element_cache,
                     });
                     if item.contains_focused(window, cx) {
                         rendered_focused_item = true;
@@ -961,20 +1030,29 @@ impl StateInner {
 
         // Measure items in the leading overdraw
         let mut leading_overdraw = scroll_top.offset_in_item;
-        while leading_overdraw < self.overdraw {
+        while leading_overdraw < overdraw {
             cursor.prev();
             if let Some(item) = cursor.item() {
-                let size = if let ListItem::Measured { size, .. } = item {
-                    *size
+                let (size, element_cache) = if let ListItem::Measured {
+                    size,
+                    element_cache,
+                    ..
+                } = item
+                {
+                    (*size, element_cache.clone())
                 } else {
                     let mut element = render_item(cursor.start().0, window, cx);
-                    element.layout_as_root(available_item_space, window, cx)
+                    let size = element.layout_as_root(available_item_space, window, cx);
+                    let element_cache = CachedListElement::default();
+                    *element_cache.borrow_mut() = Some(element);
+                    (size, Some(element_cache))
                 };
 
                 leading_overdraw += size.height;
                 measured_items.push_front(ListItem::Measured {
                     size,
                     focus_handle: item.focus_handle(),
+                    element_cache,
                 });
             } else {
                 break;
@@ -1012,12 +1090,17 @@ impl StateInner {
             while let Some(item) = cursor.item() {
                 if item.contains_focused(window, cx) {
                     let item_index = cursor.start().0;
-                    let mut element = render_item(cursor.start().0, window, cx);
+                    let element_cache = item.element_cache().unwrap_or_default();
+                    let mut cached_element = element_cache.borrow_mut().take();
+                    let mut element = cached_element
+                        .take()
+                        .unwrap_or_else(|| render_item(cursor.start().0, window, cx));
                     let size = element.layout_as_root(available_item_space, window, cx);
                     item_layouts.push_back(ItemLayout {
                         index: item_index,
                         element,
                         size,
+                        element_cache,
                     });
                     break;
                 }
@@ -1330,6 +1413,25 @@ impl Element for List {
                 item.element.paint(window, cx);
             }
         });
+        let visible_start = prepaint
+            .layout
+            .item_layouts
+            .front()
+            .map(|item| item.index)
+            .unwrap_or(0);
+        let visible_end = prepaint
+            .layout
+            .item_layouts
+            .back()
+            .map(|item| item.index.saturating_add(1))
+            .unwrap_or(visible_start);
+        for item in prepaint.layout.item_layouts.drain(..) {
+            *item.element_cache.borrow_mut() = Some(item.element);
+        }
+        self.state
+            .0
+            .borrow_mut()
+            .evict_cached_elements(visible_start..visible_end);
 
         let list_state = self.state.clone();
         let height = bounds.size.height;

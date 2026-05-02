@@ -1793,6 +1793,7 @@ impl Window {
     pub fn refresh(&mut self) {
         if self.invalidator.not_drawing() {
             self.refreshing = true;
+            self.layout_cache.clear();
             self.invalidator.set_dirty(true);
         }
     }
@@ -4020,7 +4021,7 @@ impl Window {
     pub(crate) fn cached_layout_for_view(&mut self, view_id: EntityId) -> Option<LayoutId> {
         self.invalidator.debug_assert_prepaint();
 
-        if !self.should_skip_view(view_id) {
+        if self.refreshing || !self.should_skip_view(view_id) {
             self.layout_cache.remove(&view_id);
             return None;
         }
