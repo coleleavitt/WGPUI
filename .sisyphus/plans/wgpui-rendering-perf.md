@@ -279,7 +279,7 @@ The current `gpui_wgpu` renderer reuploads ALL instance data every frame via
 diffs.
 
 #### 3.1 Persistent Typed Buffers
-- [ ] Pre-allocate typed GPU buffers at renderer init (following Pulsar pattern):
+- [x] Pre-allocate typed GPU buffers at renderer init (following Pulsar pattern):
   ```
   quads_buffer:         wgpu::Buffer  // persistent
   shadows_buffer:       wgpu::Buffer  // persistent
@@ -288,8 +288,8 @@ diffs.
   poly_sprites_buffer:  wgpu::Buffer  // persistent
   paths_vertices_buffer: wgpu::Buffer // persistent
   ```
-- [ ] Size buffers with headroom (2x expected max, grow-only)
-- [ ] Replace per-frame `write_buffer(entire_data)` with partial writes
+- [x] Size buffers with headroom (2x expected max, grow-only)
+- [x] Replace per-frame `write_buffer(entire_data)` with partial writes
 
 **Reference**: `crates/gpui/src/platform/cross/render_context.rs` lines 83-145
 shows exactly this pattern. Port the allocation strategy, not the whole file.
@@ -299,11 +299,11 @@ shows exactly this pattern. Port the allocation strategy, not the whole file.
 - `crates/gpui_wgpu/src/wgpu_context.rs` — if buffer init needs to move here
 
 #### 3.2 Diff-Based Upload
-- [ ] Scene provides `changed_ranges()` — which primitive indices changed
+- [x] Scene provides `changed_ranges()` — which primitive indices changed
   (from Phase 1's persistent scene tracking)
-- [ ] Renderer only calls `queue.write_buffer()` for changed byte ranges
-- [ ] Use `write_buffer_with()` or offset writes for sub-buffer updates
-- [ ] Track per-buffer dirty ranges: `quads_dirty: Option<Range<u64>>`
+- [x] Renderer only calls `queue.write_buffer()` for changed byte ranges
+- [x] Use `write_buffer_with()` or offset writes for sub-buffer updates
+- [x] Track per-buffer dirty ranges: `quads_dirty: Option<Range<u64>>`
 
 **Key optimization**: If scene says "quads 50-75 changed", only upload
 those 25 quads (25 * sizeof(Quad) bytes) instead of all 500 quads.

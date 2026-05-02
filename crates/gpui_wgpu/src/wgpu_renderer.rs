@@ -9,7 +9,9 @@ use log::warn;
 #[cfg(not(target_family = "wasm"))]
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use std::cell::RefCell;
+use std::mem::{size_of, size_of_val};
 use std::num::NonZeroU64;
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
@@ -139,6 +141,162 @@ struct WgpuResources {
     path_msaa_view: Option<wgpu::TextureView>,
 }
 
+struct PersistentTypeBuffer {
+    buffer: wgpu::Buffer,
+    capacity: usize,
+    len: usize,
+}
+
+impl PersistentTypeBuffer {
+    fn new(device: &wgpu::Device, label: &str, initial_capacity_bytes: usize) -> Self {
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: initial_capacity_bytes as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        Self {
+            buffer,
+            capacity: initial_capacity_bytes,
+            len: 0,
+        }
+    }
+
+    fn upload_full(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        data: &[u8],
+        label: &str,
+    ) -> bool {
+        let mut reallocated = false;
+        if data.len() > self.capacity {
+            let new_capacity = data.len().saturating_mul(2).max(4096);
+            self.buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: new_capacity as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            self.capacity = new_capacity;
+            reallocated = true;
+        }
+
+        if !data.is_empty() {
+            queue.write_buffer(&self.buffer, 0, data);
+        }
+        self.len = data.len();
+        reallocated
+    }
+
+    fn upload_ranges(
+        &self,
+        queue: &wgpu::Queue,
+        full_data: &[u8],
+        ranges: &[Range<usize>],
+        element_size: usize,
+    ) -> usize {
+        let mut bytes_uploaded = 0usize;
+        for range in ranges {
+            let byte_start = range.start.saturating_mul(element_size);
+            let byte_end = range
+                .end
+                .saturating_mul(element_size)
+                .min(full_data.len());
+            if byte_start < byte_end && byte_end <= full_data.len() {
+                queue.write_buffer(&self.buffer, byte_start as u64, &full_data[byte_start..byte_end]);
+                bytes_uploaded = bytes_uploaded.saturating_add(byte_end - byte_start);
+            }
+        }
+        bytes_uploaded
+    }
+
+    fn binding(&self, offset: usize, size: usize) -> wgpu::BindingResource<'_> {
+        wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+            buffer: &self.buffer,
+            offset: offset as u64,
+            size: NonZeroU64::new(size.max(16) as u64),
+        })
+    }
+}
+
+struct PersistentBuffers {
+    shadows: PersistentTypeBuffer,
+    quads: PersistentTypeBuffer,
+    underlines: PersistentTypeBuffer,
+    monochrome_sprites: PersistentTypeBuffer,
+    subpixel_sprites: PersistentTypeBuffer,
+    polychrome_sprites: PersistentTypeBuffer,
+    last_shadow_len: usize,
+    last_quad_len: usize,
+    last_underline_len: usize,
+    last_mono_sprite_len: usize,
+    last_subpixel_sprite_len: usize,
+    last_poly_sprite_len: usize,
+    last_generation: u64,
+}
+
+impl PersistentBuffers {
+    fn new(device: &wgpu::Device) -> Self {
+        let initial_capacity = 64 * 1024;
+        Self {
+            shadows: PersistentTypeBuffer::new(device, "shadows_persistent", initial_capacity),
+            quads: PersistentTypeBuffer::new(device, "quads_persistent", initial_capacity),
+            underlines: PersistentTypeBuffer::new(device, "underlines_persistent", initial_capacity),
+            monochrome_sprites: PersistentTypeBuffer::new(
+                device,
+                "monochrome_sprites_persistent",
+                initial_capacity,
+            ),
+            subpixel_sprites: PersistentTypeBuffer::new(
+                device,
+                "subpixel_sprites_persistent",
+                initial_capacity,
+            ),
+            polychrome_sprites: PersistentTypeBuffer::new(
+                device,
+                "polychrome_sprites_persistent",
+                initial_capacity,
+            ),
+            last_shadow_len: 0,
+            last_quad_len: 0,
+            last_underline_len: 0,
+            last_mono_sprite_len: 0,
+            last_subpixel_sprite_len: 0,
+            last_poly_sprite_len: 0,
+            last_generation: u64::MAX,
+        }
+    }
+}
+
+fn upload_persistent_instances<T>(
+    buffer: &mut PersistentTypeBuffer,
+    last_len: &mut usize,
+    instances: &[T],
+    changed_ranges: &[Range<usize>],
+    generation_changed: bool,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    upload_bytes: &mut usize,
+    upload_count: &mut u32,
+) {
+    let data = unsafe { std::slice::from_raw_parts(instances.as_ptr() as *const u8, size_of_val(instances)) };
+    if instances.len() != *last_len || (generation_changed && changed_ranges.is_empty()) {
+        buffer.upload_full(device, queue, data, label);
+        *last_len = instances.len();
+        if !data.is_empty() {
+            *upload_bytes = upload_bytes.saturating_add(data.len());
+            *upload_count = upload_count.saturating_add(1);
+        }
+    } else if !changed_ranges.is_empty() {
+        let bytes = buffer.upload_ranges(queue, data, changed_ranges, size_of::<T>());
+        *upload_bytes = upload_bytes.saturating_add(bytes);
+        *upload_count = upload_count.saturating_add(changed_ranges.len() as u32);
+    }
+}
+
 impl WgpuResources {
     fn invalidate_intermediate_textures(&mut self) {
         self.path_intermediate_texture = None;
@@ -177,6 +335,7 @@ pub struct WgpuRenderer {
     needs_redraw: bool,
     has_drawn_frame: bool,
     last_frame_stats: Option<GpuFrameStats>,
+    persistent_buffers: PersistentBuffers,
 }
 
 impl WgpuRenderer {
@@ -483,6 +642,7 @@ impl WgpuRenderer {
             path_msaa_texture: None,
             path_msaa_view: None,
         };
+        let persistent_buffers = PersistentBuffers::new(&context.device);
 
         Ok(Self {
             context: gpu_context,
@@ -509,6 +669,7 @@ impl WgpuRenderer {
             needs_redraw: false,
             has_drawn_frame: false,
             last_frame_stats: None,
+            persistent_buffers,
         })
     }
 
@@ -1303,6 +1464,89 @@ impl WgpuRenderer {
             upload_count = upload_count.saturating_add(1);
         }
 
+        {
+            let resources = self.resources();
+            let device = resources.device.clone();
+            let queue = resources.queue.clone();
+            let changed = scene.changed_ranges();
+            let generation = scene.scene_generation();
+            let generation_changed = generation != self.persistent_buffers.last_generation;
+
+            upload_persistent_instances(
+                &mut self.persistent_buffers.shadows,
+                &mut self.persistent_buffers.last_shadow_len,
+                &scene.shadows,
+                &changed.shadows,
+                generation_changed,
+                &device,
+                &queue,
+                "shadows_persistent",
+                &mut upload_bytes,
+                &mut upload_count,
+            );
+            upload_persistent_instances(
+                &mut self.persistent_buffers.quads,
+                &mut self.persistent_buffers.last_quad_len,
+                &scene.quads,
+                &changed.quads,
+                generation_changed,
+                &device,
+                &queue,
+                "quads_persistent",
+                &mut upload_bytes,
+                &mut upload_count,
+            );
+            upload_persistent_instances(
+                &mut self.persistent_buffers.underlines,
+                &mut self.persistent_buffers.last_underline_len,
+                &scene.underlines,
+                &changed.underlines,
+                generation_changed,
+                &device,
+                &queue,
+                "underlines_persistent",
+                &mut upload_bytes,
+                &mut upload_count,
+            );
+            upload_persistent_instances(
+                &mut self.persistent_buffers.monochrome_sprites,
+                &mut self.persistent_buffers.last_mono_sprite_len,
+                &scene.monochrome_sprites,
+                &changed.monochrome_sprites,
+                generation_changed,
+                &device,
+                &queue,
+                "monochrome_sprites_persistent",
+                &mut upload_bytes,
+                &mut upload_count,
+            );
+            upload_persistent_instances(
+                &mut self.persistent_buffers.subpixel_sprites,
+                &mut self.persistent_buffers.last_subpixel_sprite_len,
+                &scene.subpixel_sprites,
+                &changed.subpixel_sprites,
+                generation_changed,
+                &device,
+                &queue,
+                "subpixel_sprites_persistent",
+                &mut upload_bytes,
+                &mut upload_count,
+            );
+            upload_persistent_instances(
+                &mut self.persistent_buffers.polychrome_sprites,
+                &mut self.persistent_buffers.last_poly_sprite_len,
+                &scene.polychrome_sprites,
+                &changed.polychrome_sprites,
+                generation_changed,
+                &device,
+                &queue,
+                "polychrome_sprites_persistent",
+                &mut upload_bytes,
+                &mut upload_count,
+            );
+            self.persistent_buffers.last_generation = generation;
+        }
+
         loop {
             let mut instance_offset: u64 = 0;
             let mut overflow = false;
@@ -1340,25 +1584,11 @@ impl WgpuRenderer {
                     let ok = match batch {
                         PrimitiveBatch::Quads(range) => {
                             Self::add_primitive_count(&mut primitive_counts.quads, range.len());
-                            self.draw_quads(
-                                &scene.quads[range],
-                                &mut instance_offset,
-                                &mut pass,
-                                &mut upload_bytes,
-                                &mut upload_count,
-                                &mut draw_call_count,
-                            )
+                            self.draw_quads_persistent(range, &mut pass, &mut draw_call_count)
                         }
                         PrimitiveBatch::Shadows(range) => {
                             Self::add_primitive_count(&mut primitive_counts.shadows, range.len());
-                            self.draw_shadows(
-                                &scene.shadows[range],
-                                &mut instance_offset,
-                                &mut pass,
-                                &mut upload_bytes,
-                                &mut upload_count,
-                                &mut draw_call_count,
-                            )
+                            self.draw_shadows_persistent(range, &mut pass, &mut draw_call_count)
                         }
                         PrimitiveBatch::Paths(range) => {
                             Self::add_primitive_count(&mut primitive_counts.paths, range.len());
@@ -1409,27 +1639,17 @@ impl WgpuRenderer {
                         }
                         PrimitiveBatch::Underlines(range) => {
                             Self::add_primitive_count(&mut primitive_counts.underlines, range.len());
-                            self.draw_underlines(
-                                &scene.underlines[range],
-                                &mut instance_offset,
-                                &mut pass,
-                                &mut upload_bytes,
-                                &mut upload_count,
-                                &mut draw_call_count,
-                            )
+                            self.draw_underlines_persistent(range, &mut pass, &mut draw_call_count)
                         }
                         PrimitiveBatch::MonochromeSprites { texture_id, range } => {
                             Self::add_primitive_count(
                                 &mut primitive_counts.monochrome_sprites,
                                 range.len(),
                             );
-                            self.draw_monochrome_sprites(
-                                &scene.monochrome_sprites[range],
+                            self.draw_monochrome_sprites_persistent(
                                 texture_id,
-                                &mut instance_offset,
+                                range,
                                 &mut pass,
-                                &mut upload_bytes,
-                                &mut upload_count,
                                 &mut draw_call_count,
                             )
                         }
@@ -1438,13 +1658,10 @@ impl WgpuRenderer {
                                 &mut primitive_counts.subpixel_sprites,
                                 range.len(),
                             );
-                            self.draw_subpixel_sprites(
-                                &scene.subpixel_sprites[range],
+                            self.draw_subpixel_sprites_persistent(
                                 texture_id,
-                                &mut instance_offset,
+                                range,
                                 &mut pass,
-                                &mut upload_bytes,
-                                &mut upload_count,
                                 &mut draw_call_count,
                             )
                         }
@@ -1453,13 +1670,10 @@ impl WgpuRenderer {
                                 &mut primitive_counts.polychrome_sprites,
                                 range.len(),
                             );
-                            self.draw_polychrome_sprites(
-                                &scene.polychrome_sprites[range],
+                            self.draw_polychrome_sprites_persistent(
                                 texture_id,
-                                &mut instance_offset,
+                                range,
                                 &mut pass,
-                                &mut upload_bytes,
-                                &mut upload_count,
                                 &mut draw_call_count,
                             )
                         }
@@ -1508,6 +1722,7 @@ impl WgpuRenderer {
         }
     }
 
+    #[allow(dead_code)]
     fn draw_quads(
         &self,
         quads: &[Quad],
@@ -1530,6 +1745,7 @@ impl WgpuRenderer {
         )
     }
 
+    #[allow(dead_code)]
     fn draw_shadows(
         &self,
         shadows: &[Shadow],
@@ -1552,6 +1768,7 @@ impl WgpuRenderer {
         )
     }
 
+    #[allow(dead_code)]
     fn draw_underlines(
         &self,
         underlines: &[Underline],
@@ -1574,6 +1791,7 @@ impl WgpuRenderer {
         )
     }
 
+    #[allow(dead_code)]
     fn draw_monochrome_sprites(
         &self,
         sprites: &[MonochromeSprite],
@@ -1599,6 +1817,7 @@ impl WgpuRenderer {
         )
     }
 
+    #[allow(dead_code)]
     fn draw_subpixel_sprites(
         &self,
         sprites: &[SubpixelSprite],
@@ -1630,6 +1849,7 @@ impl WgpuRenderer {
         )
     }
 
+    #[allow(dead_code)]
     fn draw_polychrome_sprites(
         &self,
         sprites: &[PolychromeSprite],
@@ -1655,6 +1875,199 @@ impl WgpuRenderer {
         )
     }
 
+    fn draw_quads_persistent(
+        &self,
+        range: Range<usize>,
+        pass: &mut wgpu::RenderPass<'_>,
+        draw_call_count: &mut u32,
+    ) -> bool {
+        self.draw_persistent_instances(
+            range,
+            size_of::<Quad>(),
+            &self.persistent_buffers.quads,
+            &self.resources().pipelines.quads,
+            pass,
+            draw_call_count,
+        )
+    }
+
+    fn draw_shadows_persistent(
+        &self,
+        range: Range<usize>,
+        pass: &mut wgpu::RenderPass<'_>,
+        draw_call_count: &mut u32,
+    ) -> bool {
+        self.draw_persistent_instances(
+            range,
+            size_of::<Shadow>(),
+            &self.persistent_buffers.shadows,
+            &self.resources().pipelines.shadows,
+            pass,
+            draw_call_count,
+        )
+    }
+
+    fn draw_underlines_persistent(
+        &self,
+        range: Range<usize>,
+        pass: &mut wgpu::RenderPass<'_>,
+        draw_call_count: &mut u32,
+    ) -> bool {
+        self.draw_persistent_instances(
+            range,
+            size_of::<Underline>(),
+            &self.persistent_buffers.underlines,
+            &self.resources().pipelines.underlines,
+            pass,
+            draw_call_count,
+        )
+    }
+
+    fn draw_monochrome_sprites_persistent(
+        &self,
+        texture_id: AtlasTextureId,
+        range: Range<usize>,
+        pass: &mut wgpu::RenderPass<'_>,
+        draw_call_count: &mut u32,
+    ) -> bool {
+        let tex_info = self.atlas.get_texture_info(texture_id);
+        self.draw_persistent_instances_with_texture(
+            range,
+            size_of::<MonochromeSprite>(),
+            &self.persistent_buffers.monochrome_sprites,
+            &tex_info.view,
+            &self.resources().pipelines.mono_sprites,
+            pass,
+            draw_call_count,
+        )
+    }
+
+    fn draw_subpixel_sprites_persistent(
+        &self,
+        texture_id: AtlasTextureId,
+        range: Range<usize>,
+        pass: &mut wgpu::RenderPass<'_>,
+        draw_call_count: &mut u32,
+    ) -> bool {
+        let tex_info = self.atlas.get_texture_info(texture_id);
+        let resources = self.resources();
+        let pipeline = resources
+            .pipelines
+            .subpixel_sprites
+            .as_ref()
+            .unwrap_or(&resources.pipelines.mono_sprites);
+        self.draw_persistent_instances_with_texture(
+            range,
+            size_of::<SubpixelSprite>(),
+            &self.persistent_buffers.subpixel_sprites,
+            &tex_info.view,
+            pipeline,
+            pass,
+            draw_call_count,
+        )
+    }
+
+    fn draw_polychrome_sprites_persistent(
+        &self,
+        texture_id: AtlasTextureId,
+        range: Range<usize>,
+        pass: &mut wgpu::RenderPass<'_>,
+        draw_call_count: &mut u32,
+    ) -> bool {
+        let tex_info = self.atlas.get_texture_info(texture_id);
+        self.draw_persistent_instances_with_texture(
+            range,
+            size_of::<PolychromeSprite>(),
+            &self.persistent_buffers.polychrome_sprites,
+            &tex_info.view,
+            &self.resources().pipelines.poly_sprites,
+            pass,
+            draw_call_count,
+        )
+    }
+
+    fn draw_persistent_instances(
+        &self,
+        range: Range<usize>,
+        element_size: usize,
+        buffer: &PersistentTypeBuffer,
+        pipeline: &wgpu::RenderPipeline,
+        pass: &mut wgpu::RenderPass<'_>,
+        draw_call_count: &mut u32,
+    ) -> bool {
+        let instance_count = range.len() as u32;
+        if instance_count == 0 {
+            return true;
+        }
+
+        let byte_offset = range.start.saturating_mul(element_size);
+        let byte_size = range.len().saturating_mul(element_size);
+        let resources = self.resources();
+        let bind_group = resources
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &resources.bind_group_layouts.instances,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffer.binding(byte_offset, byte_size),
+                }],
+            });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &resources.globals_bind_group, &[]);
+        pass.set_bind_group(1, &bind_group, &[]);
+        pass.draw(0..4, 0..instance_count);
+        *draw_call_count = draw_call_count.saturating_add(1);
+        true
+    }
+
+    fn draw_persistent_instances_with_texture(
+        &self,
+        range: Range<usize>,
+        element_size: usize,
+        buffer: &PersistentTypeBuffer,
+        texture_view: &wgpu::TextureView,
+        pipeline: &wgpu::RenderPipeline,
+        pass: &mut wgpu::RenderPass<'_>,
+        draw_call_count: &mut u32,
+    ) -> bool {
+        let instance_count = range.len() as u32;
+        if instance_count == 0 {
+            return true;
+        }
+
+        let byte_offset = range.start.saturating_mul(element_size);
+        let byte_size = range.len().saturating_mul(element_size);
+        let resources = self.resources();
+        let bind_group = resources
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &resources.bind_group_layouts.instances_with_texture,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffer.binding(byte_offset, byte_size),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&resources.atlas_sampler),
+                    },
+                ],
+            });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &resources.globals_bind_group, &[]);
+        pass.set_bind_group(1, &bind_group, &[]);
+        pass.draw(0..4, 0..instance_count);
+        *draw_call_count = draw_call_count.saturating_add(1);
+        true
+    }
+
+    #[allow(dead_code)]
     fn draw_instances(
         &self,
         data: &[u8],
