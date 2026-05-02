@@ -727,6 +727,25 @@ pub enum SurfaceContent {
     ExternalTexture(GpuTextureHandle),
 }
 
+impl SurfaceContent {
+    /// Return the external GPU texture when this surface was created from one.
+    pub fn external_texture(&self) -> Option<&GpuTextureHandle> {
+        #[cfg(target_os = "macos")]
+        {
+            match self {
+                Self::CoreVideo(_) => None,
+                Self::ExternalTexture(texture) => Some(texture),
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let Self::ExternalTexture(texture) = self;
+            Some(texture)
+        }
+    }
+}
+
 impl From<PaintSurface> for Primitive {
     fn from(surface: PaintSurface) -> Self {
         Primitive::Surface(surface)

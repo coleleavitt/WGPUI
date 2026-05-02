@@ -1,8 +1,35 @@
-use gpui::{GpuCanvasSource, GpuTextureFormat, GpuTextureHandle, ObjectFit, gpu_canvas, surface};
+use gpui::{
+    GpuCanvasSource, GpuTextureBackend, GpuTextureFormat, GpuTextureHandle, GpuTextureResource,
+    ObjectFit, gpu_canvas, surface,
+};
+use std::any::Any;
+use std::sync::Arc;
+
+struct TestTextureResource;
+
+impl GpuTextureResource for TestTextureResource {
+    fn backend(&self) -> GpuTextureBackend {
+        GpuTextureBackend::Wgpu
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
 
 fn main() {
-    let front_buffer = GpuTextureHandle::new_with_format(1, 640, 480, GpuTextureFormat::BGRA8);
-    let back_buffer = GpuTextureHandle::new(2, 640, 480);
+    let front_buffer = GpuTextureHandle::from_resource(
+        Arc::new(TestTextureResource),
+        640,
+        480,
+        GpuTextureFormat::BGRA8,
+    );
+    let back_buffer = GpuTextureHandle::from_resource(
+        Arc::new(TestTextureResource),
+        640,
+        480,
+        GpuTextureFormat::RGBA8,
+    );
     let source = GpuCanvasSource::new(front_buffer.clone(), back_buffer);
 
     source.swap_buffers();

@@ -7,7 +7,7 @@ use core_video::pixel_buffer::CVPixelBuffer;
 use refineable::Refineable;
 
 /// A source of a surface's content.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum SurfaceSource {
     /// A macOS image buffer from CoreVideo
     #[cfg(target_os = "macos")]

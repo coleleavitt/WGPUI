@@ -1,4 +1,4 @@
-use crate::{CompositorGpuHint, WgpuAtlas, WgpuContext};
+use crate::{CompositorGpuHint, WgpuAtlas, WgpuContext, WgpuTextureResource};
 use bytemuck::{Pod, Zeroable};
 use gpui::{
     AtlasTextureId, Background, Bounds, DevicePixels, GpuSpecs, MonochromeSprite, Path, Point,
@@ -12,6 +12,7 @@ use std::cell::RefCell;
 use std::num::NonZeroU64;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use wgpu::util::DeviceExt;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -590,16 +591,6 @@ impl WgpuRenderer {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
@@ -1299,10 +1290,8 @@ impl WgpuRenderer {
                                 &mut instance_offset,
                                 &mut pass,
                             ),
-                        PrimitiveBatch::Surfaces(_surfaces) => {
-                            // Surfaces are macOS-only for video playback
-                            // Not implemented for Linux/wgpu
-                            true
+                        PrimitiveBatch::Surfaces(range) => {
+                            self.draw_surfaces(&scene.surfaces[range], &mut pass)
                         }
                     };
                     if !ok {
@@ -1517,6 +1506,69 @@ impl WgpuRenderer {
         pass.set_bind_group(0, &resources.globals_bind_group, &[]);
         pass.set_bind_group(1, &bind_group, &[]);
         pass.draw(0..4, 0..instance_count);
+        true
+    }
+
+    fn draw_surfaces(
+        &self,
+        surfaces: &[gpui::PaintSurface],
+        pass: &mut wgpu::RenderPass<'_>,
+    ) -> bool {
+        let resources = self.resources();
+        pass.set_pipeline(&resources.pipelines.surfaces);
+        pass.set_bind_group(0, &resources.globals_bind_group, &[]);
+
+        for surface in surfaces {
+            let Some(texture) = surface.content.external_texture() else {
+                continue;
+            };
+            let Some(resource) = texture
+                .resource
+                .as_any()
+                .downcast_ref::<WgpuTextureResource>()
+            else {
+                warn!(
+                    "ignoring external {:?} texture in wgpu renderer",
+                    texture.backend()
+                );
+                continue;
+            };
+            let params = SurfaceParams {
+                bounds: surface.bounds.into(),
+                content_mask: surface.content_mask.bounds.into(),
+            };
+            let params_buffer =
+                resources
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: None,
+                        contents: bytemuck::bytes_of(&params),
+                        usage: wgpu::BufferUsages::UNIFORM,
+                    });
+            let bind_group = resources
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: None,
+                    layout: &resources.bind_group_layouts.surfaces,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: params_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(resource.view()),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Sampler(&resources.atlas_sampler),
+                        },
+                    ],
+                });
+            pass.set_bind_group(1, &bind_group, &[]);
+            pass.draw(0..4, 0..1);
+        }
+
         true
     }
 

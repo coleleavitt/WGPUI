@@ -1,14 +1,52 @@
+use std::any::Any;
+use std::fmt;
+use std::sync::Arc;
+
+/// Backend that owns an external GPU texture resource.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuTextureBackend {
+    /// A `wgpu` texture view.
+    Wgpu,
+    /// A Metal texture.
+    Metal,
+    /// A Direct3D texture.
+    Direct3D,
+    /// A Vulkan image.
+    Vulkan,
+}
+
+/// Type-erased backend texture resource.
+pub trait GpuTextureResource: Any + Send + Sync {
+    /// Backend kind for the resource.
+    fn backend(&self) -> GpuTextureBackend;
+
+    /// Downcast hook for renderer-specific resource imports.
+    fn as_any(&self) -> &dyn Any;
+}
+
 /// Universal GPU texture handle for external texture embedding.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct GpuTextureHandle {
-    /// Platform-native handle to the shared GPU texture memory.
-    pub native_handle: isize,
+    /// Backend-owned texture resource.
+    pub resource: Arc<dyn GpuTextureResource>,
     /// Width of the texture in pixels.
     pub width: u32,
     /// Height of the texture in pixels.
     pub height: u32,
     /// Texture format.
     pub format: GpuTextureFormat,
+}
+
+impl fmt::Debug for GpuTextureHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("GpuTextureHandle")
+            .field("backend", &self.resource.backend())
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("format", &self.format)
+            .finish_non_exhaustive()
+    }
 }
 
 /// GPU texture format for external texture embedding.
@@ -23,29 +61,24 @@ pub enum GpuTextureFormat {
 }
 
 impl GpuTextureHandle {
-    /// Create a new GPU texture handle with RGBA8 format.
-    pub fn new(native_handle: isize, width: u32, height: u32) -> Self {
-        Self {
-            native_handle,
-            width,
-            height,
-            format: GpuTextureFormat::RGBA8,
-        }
-    }
-
-    /// Create a new GPU texture handle with a specific format.
-    pub fn new_with_format(
-        native_handle: isize,
+    /// Create a GPU texture handle from a backend resource.
+    pub fn from_resource(
+        resource: Arc<dyn GpuTextureResource>,
         width: u32,
         height: u32,
         format: GpuTextureFormat,
     ) -> Self {
         Self {
-            native_handle,
+            resource,
             width,
             height,
             format,
         }
+    }
+
+    /// Return the backend that owns this texture resource.
+    pub fn backend(&self) -> GpuTextureBackend {
+        self.resource.backend()
     }
 
     /// Get the size in bytes of a single pixel for this format.
