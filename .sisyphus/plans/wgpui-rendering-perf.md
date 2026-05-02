@@ -309,10 +309,10 @@ shows exactly this pattern. Port the allocation strategy, not the whole file.
 those 25 quads (25 * sizeof(Quad) bytes) instead of all 500 quads.
 
 #### 3.3 Buffer Compaction
-- [ ] When views are removed, their GPU buffer slots become holes
-- [ ] Track free ranges per buffer type
-- [ ] Compact when fragmentation exceeds 30% (copy remaining data, defrag)
-- [ ] Compaction is a full reupload — amortized cost
+- [x] When views are removed, their GPU buffer slots become holes
+- [x] Track free ranges per buffer type
+- [x] Compact when fragmentation exceeds 30% (copy remaining data, defrag)
+- [x] Compaction is a full reupload — amortized cost
 
 **Acceptance criteria**:
 - Static UI frame: zero bytes uploaded to GPU (target: 0 write_buffer calls)

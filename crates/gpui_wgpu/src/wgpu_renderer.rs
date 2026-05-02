@@ -145,6 +145,7 @@ struct PersistentTypeBuffer {
     buffer: wgpu::Buffer,
     capacity: usize,
     len: usize,
+    fragmentation_bytes: usize,
 }
 
 impl PersistentTypeBuffer {
@@ -160,7 +161,37 @@ impl PersistentTypeBuffer {
             buffer,
             capacity: initial_capacity_bytes,
             len: 0,
+            fragmentation_bytes: 0,
         }
+    }
+
+    fn fragmentation_ratio(&self) -> f32 {
+        if self.capacity == 0 {
+            return 0.0;
+        }
+
+        self.fragmentation_bytes as f32 / self.capacity as f32
+    }
+
+    fn needs_compaction(&self) -> bool {
+        self.fragmentation_ratio() > 0.3
+    }
+
+    fn compact(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, data: &[u8], label: &str) {
+        let new_capacity = data.len().saturating_mul(2).max(4096);
+        self.buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: new_capacity as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.capacity = new_capacity;
+
+        if !data.is_empty() {
+            queue.write_buffer(&self.buffer, 0, data);
+        }
+        self.len = data.len();
+        self.fragmentation_bytes = 0;
     }
 
     fn upload_full(
@@ -171,6 +202,7 @@ impl PersistentTypeBuffer {
         label: &str,
     ) -> bool {
         let mut reallocated = false;
+        let old_len = self.len;
         if data.len() > self.capacity {
             let new_capacity = data.len().saturating_mul(2).max(4096);
             self.buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -180,11 +212,17 @@ impl PersistentTypeBuffer {
                 mapped_at_creation: false,
             });
             self.capacity = new_capacity;
+            self.fragmentation_bytes = 0;
             reallocated = true;
         }
 
         if !data.is_empty() {
             queue.write_buffer(&self.buffer, 0, data);
+        }
+        if data.len() < old_len {
+            self.fragmentation_bytes = self
+                .fragmentation_bytes
+                .saturating_add(old_len - data.len());
         }
         self.len = data.len();
         reallocated
@@ -302,6 +340,31 @@ fn upload_persistent_instances<T>(
         let bytes = buffer.upload_ranges(queue, data, changed_ranges, size_of::<T>());
         *upload_bytes = upload_bytes.saturating_add(bytes);
         *upload_count = upload_count.saturating_add(changed_ranges.len() as u32);
+    }
+}
+
+fn compact_persistent_instances<T>(
+    buffer: &mut PersistentTypeBuffer,
+    instances: &[T],
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    upload_bytes: &mut usize,
+    upload_count: &mut u32,
+) {
+    if !buffer.needs_compaction() {
+        return;
+    }
+
+    // SAFETY: This mirrors WgpuRenderer::instance_bytes; these primitive structs are encoded
+    // directly into storage buffers and decoded by matching WGSL structs.
+    let data = unsafe {
+        std::slice::from_raw_parts(instances.as_ptr() as *const u8, size_of_val(instances))
+    };
+    buffer.compact(device, queue, data, label);
+    if !data.is_empty() {
+        *upload_bytes = upload_bytes.saturating_add(data.len());
+        *upload_count = upload_count.saturating_add(1);
     }
 }
 
@@ -1546,6 +1609,60 @@ impl WgpuRenderer {
                 &scene.polychrome_sprites,
                 &changed.polychrome_sprites,
                 generation_changed,
+                &device,
+                &queue,
+                "polychrome_sprites_persistent",
+                &mut upload_bytes,
+                &mut upload_count,
+            );
+            compact_persistent_instances(
+                &mut self.persistent_buffers.shadows,
+                &scene.shadows,
+                &device,
+                &queue,
+                "shadows_persistent",
+                &mut upload_bytes,
+                &mut upload_count,
+            );
+            compact_persistent_instances(
+                &mut self.persistent_buffers.quads,
+                &scene.quads,
+                &device,
+                &queue,
+                "quads_persistent",
+                &mut upload_bytes,
+                &mut upload_count,
+            );
+            compact_persistent_instances(
+                &mut self.persistent_buffers.underlines,
+                &scene.underlines,
+                &device,
+                &queue,
+                "underlines_persistent",
+                &mut upload_bytes,
+                &mut upload_count,
+            );
+            compact_persistent_instances(
+                &mut self.persistent_buffers.monochrome_sprites,
+                &scene.monochrome_sprites,
+                &device,
+                &queue,
+                "monochrome_sprites_persistent",
+                &mut upload_bytes,
+                &mut upload_count,
+            );
+            compact_persistent_instances(
+                &mut self.persistent_buffers.subpixel_sprites,
+                &scene.subpixel_sprites,
+                &device,
+                &queue,
+                "subpixel_sprites_persistent",
+                &mut upload_bytes,
+                &mut upload_count,
+            );
+            compact_persistent_instances(
+                &mut self.persistent_buffers.polychrome_sprites,
+                &scene.polychrome_sprites,
                 &device,
                 &queue,
                 "polychrome_sprites_persistent",
