@@ -1027,25 +1027,6 @@ impl WaylandWindowStatePtr {
                 "set_size_and_scale: calling renderer.update_drawable_size"
             );
             state.renderer.update_drawable_size(device_bounds.size);
-
-            // Re-issue opaque region with the new window dimensions.
-            // Without this, the compositor keeps the stale (smaller) opaque region
-            // after a width increase, causing black gaps on the newly exposed side.
-            if !state.is_transparent() {
-                let opaque_area = state.bounds.map(|v| f32::from(v) as i32);
-                let region = state
-                    .globals
-                    .compositor
-                    .create_region(&state.globals.qh, ());
-                region.add(
-                    opaque_area.origin.x,
-                    opaque_area.origin.y,
-                    opaque_area.size.width,
-                    opaque_area.size.height,
-                );
-                state.surface.set_opaque_region(Some(&region));
-            }
-
             (state.bounds.size, state.scale)
         };
 
@@ -1488,24 +1469,6 @@ impl PlatformWindow for WaylandWindow {
 
     fn completed_frame(&self) {
         let state = self.borrow();
-
-        match state.renderer.last_damage_rects() {
-            Some(rects) if rects.is_empty() => {
-                return;
-            }
-            Some(rects) => {
-                for [x, y, w, h] in rects {
-                    state.surface.damage_buffer(*x, *y, *w, *h);
-                }
-            }
-            None => {
-                let w = f32::from(state.bounds.size.width) as i32;
-                let h = f32::from(state.bounds.size.height) as i32;
-                let scale = state.scale as i32;
-                state.surface.damage_buffer(0, 0, w * scale, h * scale);
-            }
-        }
-
         state.surface.commit();
     }
 
