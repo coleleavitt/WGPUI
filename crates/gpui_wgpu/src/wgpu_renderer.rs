@@ -431,6 +431,10 @@ pub struct WgpuRenderer {
     needs_redraw: bool,
     has_drawn_frame: bool,
     surface_copy_supported: bool,
+    /// Damage reported by the last draw call, in device (buffer) pixels.
+    /// `None` means full redraw (entire surface is dirty).
+    /// `Some(vec)` means only those rects changed.
+    last_damage_rects: Option<Vec<[i32; 4]>>,
     last_frame_stats: Option<GpuFrameStats>,
     persistent_buffers: PersistentBuffers,
     supports_multi_draw_indirect: bool,
@@ -792,6 +796,7 @@ impl WgpuRenderer {
             needs_redraw: false,
             has_drawn_frame: false,
             surface_copy_supported,
+            last_damage_rects: None,
             last_frame_stats: None,
             persistent_buffers,
             supports_multi_draw_indirect,
@@ -1566,6 +1571,7 @@ impl WgpuRenderer {
             if damage_rects.is_empty() {
                 tracing::debug!(target: "wgpu::renderer", "draw skipped: no damage rects");
                 self.last_frame_stats = Some(GpuFrameStats::default());
+                self.last_damage_rects = Some(vec![]);
                 return;
             }
             let Some(scissor_rect) = Self::scissor_rect_for_damage(
@@ -1581,6 +1587,7 @@ impl WgpuRenderer {
                     "draw skipped: damage clipped to empty scissor"
                 );
                 self.last_frame_stats = Some(GpuFrameStats::default());
+                self.last_damage_rects = Some(vec![]);
                 return;
             };
             tracing::debug!(
@@ -2044,6 +2051,25 @@ impl WgpuRenderer {
                 .submit(std::iter::once(encoder.finish()));
             frame.present();
             self.has_drawn_frame = true;
+            // Store damage info for Wayland damage_buffer() reporting.
+            // full_redraw=true → None (entire surface), otherwise specific rects in device pixels.
+            if full_redraw {
+                self.last_damage_rects = None;
+            } else {
+                let scene_damage = scene.damage_rects();
+                let device_rects: Vec<[i32; 4]> = scene_damage
+                    .iter()
+                    .map(|b| {
+                        [
+                            b.origin.x.0 as i32,
+                            b.origin.y.0 as i32,
+                            b.size.width.0 as i32,
+                            b.size.height.0 as i32,
+                        ]
+                    })
+                    .collect();
+                self.last_damage_rects = Some(device_rects);
+            }
             self.last_frame_stats = Some(GpuFrameStats {
                 upload_bytes,
                 upload_count,
@@ -2806,6 +2832,14 @@ impl WgpuRenderer {
     /// Calling this method clears the flag.
     pub fn needs_redraw(&mut self) -> bool {
         std::mem::take(&mut self.needs_redraw)
+    }
+
+    /// Returns the damage rectangles from the last draw call, in device (buffer) pixels.
+    /// `None` means the entire surface was redrawn (full redraw).
+    /// `Some(&[])` would mean no damage (should not normally occur after a draw).
+    /// Each rect is `[x, y, width, height]`.
+    pub fn last_damage_rects(&self) -> Option<&[[i32; 4]]> {
+        self.last_damage_rects.as_deref()
     }
 
     pub fn last_frame_stats(&self) -> Option<&GpuFrameStats> {
