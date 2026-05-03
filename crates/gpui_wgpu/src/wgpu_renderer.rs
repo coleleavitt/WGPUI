@@ -1230,6 +1230,15 @@ impl WgpuRenderer {
         let width = size.width.0 as u32;
         let height = size.height.0 as u32;
 
+        tracing::debug!(
+            target: "wgpu::renderer",
+            requested_w = width,
+            requested_h = height,
+            current_w = self.surface_config.width,
+            current_h = self.surface_config.height,
+            "update_drawable_size entry"
+        );
+
         if width != self.surface_config.width || height != self.surface_config.height {
             let clamped_width = width.min(self.max_texture_size);
             let clamped_height = height.min(self.max_texture_size);
@@ -1272,6 +1281,12 @@ impl WgpuRenderer {
             // in draw() after we confirm the surface is healthy. This avoids
             // panics when the device/surface is in an invalid state during resize.
             resources.invalidate_intermediate_textures();
+            tracing::debug!(
+                target: "wgpu::renderer",
+                surface_w = self.surface_config.width,
+                surface_h = self.surface_config.height,
+                "surface reconfigured; forcing next frame to full redraw"
+            );
             self.has_drawn_frame = false;
         }
     }
@@ -1419,6 +1434,28 @@ impl WgpuRenderer {
     }
 
     pub fn draw(&mut self, scene: &Scene) {
+        let viewport_bounds = self.viewport_bounds();
+        tracing::trace!(
+            target: "wgpu::renderer",
+            surface_w = self.surface_config.width,
+            surface_h = self.surface_config.height,
+            "draw frame"
+        );
+        tracing::debug!(
+            target: "wgpu::renderer",
+            surface_w = self.surface_config.width,
+            surface_h = self.surface_config.height,
+            scene_full_redraw = scene.full_redraw_needed(viewport_bounds),
+            damage_rects = scene.damage_rects().len(),
+            shadows = scene.shadows.len(),
+            quads = scene.quads.len(),
+            paths = scene.paths.len(),
+            underlines = scene.underlines.len(),
+            monochrome_sprites = scene.monochrome_sprites.len(),
+            polychrome_sprites = scene.polychrome_sprites.len(),
+            surfaces = scene.surfaces.len(),
+            "draw scene stats"
+        );
         let mut upload_bytes: usize = 0;
         let mut upload_count: u32 = 0;
         let mut draw_call_count: u32 = 0;
@@ -1456,13 +1493,25 @@ impl WgpuRenderer {
             self.failed_frame_count = 0;
         }
 
-        let viewport_bounds = self.viewport_bounds();
-        let full_redraw = !self.has_drawn_frame || scene.full_redraw_needed(viewport_bounds);
+        let scene_full_redraw = scene.full_redraw_needed(viewport_bounds);
+        let partial_redraw_enabled = false;
+        let full_redraw = !partial_redraw_enabled || !self.has_drawn_frame || scene_full_redraw;
+        tracing::debug!(
+            target: "wgpu::renderer",
+            viewport_bounds = ?viewport_bounds,
+            has_drawn_frame = self.has_drawn_frame,
+            scene_full_redraw,
+            partial_redraw_enabled,
+            full_redraw,
+            damage_rects = scene.damage_rects().len(),
+            "draw damage decision"
+        );
         let scissor_rect = if full_redraw {
             None
         } else {
             let damage_rects = scene.damage_rects();
             if damage_rects.is_empty() {
+                tracing::debug!(target: "wgpu::renderer", "draw skipped: no damage rects");
                 self.last_frame_stats = Some(GpuFrameStats::default());
                 return;
             }
@@ -1471,9 +1520,25 @@ impl WgpuRenderer {
                 self.surface_config.width,
                 self.surface_config.height,
             ) else {
+                tracing::debug!(
+                    target: "wgpu::renderer",
+                    damage_rects = ?damage_rects,
+                    surface_w = self.surface_config.width,
+                    surface_h = self.surface_config.height,
+                    "draw skipped: damage clipped to empty scissor"
+                );
                 self.last_frame_stats = Some(GpuFrameStats::default());
                 return;
             };
+            tracing::debug!(
+                target: "wgpu::renderer",
+                scissor_x = scissor_rect.x,
+                scissor_y = scissor_rect.y,
+                scissor_w = scissor_rect.width,
+                scissor_h = scissor_rect.height,
+                damage_rects = ?damage_rects,
+                "draw using damage scissor"
+            );
             Some(scissor_rect)
         };
 

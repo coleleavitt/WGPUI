@@ -8,6 +8,7 @@ use std::{
 
 use gpui::collections::{FxHashSet, HashMap};
 use futures::channel::oneshot::Receiver;
+use tracing::{debug, trace};
 
 use raw_window_handle as rwh;
 use wayland_backend::client::ObjectId;
@@ -598,6 +599,8 @@ impl WaylandWindowStatePtr {
 
     pub fn handle_xdg_surface_event(&self, event: xdg_surface::Event) {
         if let xdg_surface::Event::Configure { serial } = event {
+            debug!(serial, "xdg_surface configure");
+            let mut resize_size = None;
             {
                 let mut state = self.state.borrow_mut();
                 if let Some(window_controls) = state.in_progress_window_controls.take() {
@@ -614,15 +617,18 @@ impl WaylandWindowStatePtr {
                 let mut state = self.state.borrow_mut();
 
                 if let Some(mut configure) = state.in_progress_configure.take() {
+                    debug!(
+                        configure_size = ?configure.size,
+                        resizing = configure.resizing,
+                        fullscreen = configure.fullscreen,
+                        maximized = configure.maximized,
+                        "configure pending"
+                    );
                     let got_unmaximized = state.maximized && !configure.maximized;
                     state.fullscreen = configure.fullscreen;
                     state.maximized = configure.maximized;
                     state.tiling = configure.tiling;
-                    // Limit interactive resizes to once per vblank
-                    if configure.resizing && state.resize_throttle {
-                        state.surface_state.ack_configure(serial);
-                        return;
-                    } else if configure.resizing {
+                    if configure.resizing {
                         state.resize_throttle = true;
                     }
                     if !configure.fullscreen && !configure.maximized {
@@ -638,22 +644,40 @@ impl WaylandWindowStatePtr {
                             };
                         }
                     }
-                    drop(state);
-                    if let Some(size) = configure.size {
-                        self.resize(size);
-                    }
+                    resize_size = configure.size;
+                } else {
+                    trace!("configure with no in_progress_configure");
                 }
             }
             let mut state = self.state.borrow_mut();
             state.surface_state.ack_configure(serial);
 
+            let geometry_bounds = if let Some(size) = resize_size {
+                Bounds {
+                    origin: Point::default(),
+                    size,
+                }
+            } else {
+                state.bounds.map_origin(|_| px(0.0))
+            };
             let window_geometry = inset_by_tiling(
-                state.bounds.map_origin(|_| px(0.0)),
+                geometry_bounds,
                 state.inset(),
                 state.tiling,
             )
             .map(|v| f32::from(v) as i32)
             .map_size(|v| if v <= 0 { 1 } else { v });
+
+            debug!(
+                bounds = ?state.bounds.size,
+                inset = ?state.inset(),
+                tiling = ?state.tiling,
+                geom_x = window_geometry.origin.x,
+                geom_y = window_geometry.origin.y,
+                geom_w = window_geometry.size.width,
+                geom_h = window_geometry.size.height,
+                "set_geometry after configure"
+            );
 
             state.surface_state.set_geometry(
                 window_geometry.origin.x,
@@ -665,7 +689,15 @@ impl WaylandWindowStatePtr {
             let request_frame_callback = !state.acknowledged_first_configure;
             if request_frame_callback {
                 state.acknowledged_first_configure = true;
-                drop(state);
+            }
+            drop(state);
+            if let Some(size) = resize_size {
+                debug!(?size, "configure -> calling self.resize()");
+                self.resize(size);
+            } else {
+                debug!("configure with no size -> skipping resize");
+            }
+            if request_frame_callback {
                 self.frame();
             }
         }
@@ -951,9 +983,17 @@ impl WaylandWindowStatePtr {
     pub fn set_size_and_scale(&self, size: Option<Size<Pixels>>, scale: Option<f32>) {
         let (size, scale) = {
             let mut state = self.state.borrow_mut();
+            trace!(
+                req_size = ?size,
+                req_scale = ?scale,
+                cur_size = ?state.bounds.size,
+                cur_scale = state.scale,
+                "set_size_and_scale entry"
+            );
             if size.is_none_or(|size| size == state.bounds.size)
                 && scale.is_none_or(|scale| scale == state.scale)
             {
+                trace!("set_size_and_scale: no-op (same size+scale)");
                 return;
             }
             if let Some(size) = size {
@@ -962,23 +1002,41 @@ impl WaylandWindowStatePtr {
             if let Some(scale) = scale {
                 state.scale = scale;
             }
+
+            // Set viewport destination BEFORE reconfiguring the wgpu surface.
+            // wgpu's surface.configure() may internally commit the wl_surface,
+            // and the compositor computes bbox from the viewport destination
+            // at commit time. If we set the viewport after configure, the
+            // compositor sees stale destination → wrong bbox → size oscillation.
+            if let Some(viewport) = &state.viewport {
+                let dest_w = f32::from(state.bounds.size.width) as i32;
+                let dest_h = f32::from(state.bounds.size.height) as i32;
+                debug!(
+                    viewport_w = dest_w,
+                    viewport_h = dest_h,
+                    "set_size_and_scale: viewport.set_destination (pre-configure)"
+                );
+                viewport.set_destination(dest_w, dest_h);
+            }
+
             let device_bounds = state.bounds.to_device_pixels(state.scale);
+            debug!(
+                logical_size = ?state.bounds.size,
+                scale = state.scale,
+                device_size = ?device_bounds.size,
+                "set_size_and_scale: calling renderer.update_drawable_size"
+            );
             state.renderer.update_drawable_size(device_bounds.size);
             (state.bounds.size, state.scale)
         };
 
         let callback = self.callbacks.borrow_mut().resize.take();
         if let Some(mut fun) = callback {
+            debug!(?size, scale, "set_size_and_scale: invoking resize callback");
             fun(size, scale);
             self.callbacks.borrow_mut().resize = Some(fun);
-        }
-
-        {
-            let state = self.state.borrow();
-            if let Some(viewport) = &state.viewport {
-                viewport
-                    .set_destination(f32::from(size.width) as i32, f32::from(size.height) as i32);
-            }
+        } else {
+            debug!("set_size_and_scale: NO resize callback registered");
         }
     }
 
@@ -1154,6 +1212,7 @@ impl PlatformWindow for WaylandWindow {
     }
 
     fn resize(&mut self, size: Size<Pixels>) {
+        debug!(?size, "PlatformWindow::resize called");
         let state = self.borrow();
         let state_ptr = self.0.clone();
 

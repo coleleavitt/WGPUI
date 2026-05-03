@@ -68,6 +68,7 @@ profiling.workspace = true
 smallvec.workspace = true
 smol.workspace = true
 strum.workspace = true
+tracing = "0.1"
 url.workspace = true
 util.workspace = true
 uuid.workspace = true

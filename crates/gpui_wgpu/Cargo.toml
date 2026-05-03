@@ -30,6 +30,7 @@ smallvec.workspace = true
 swash = "0.2.6"
 gpui_util.workspace = true
 wgpu.workspace = true
+tracing = "0.1"
 
 # Optional: only needed on platforms with multiple font sources (e.g. Linux)
 # WARNING: If you change this, you must also publish a new version of zed-font-kit to crates.io

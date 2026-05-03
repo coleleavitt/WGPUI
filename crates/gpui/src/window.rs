@@ -2187,6 +2187,12 @@ impl Window {
     pub fn bounds_changed(&mut self, cx: &mut App) {
         self.scale_factor = self.platform_window.scale_factor();
         self.viewport_size = self.platform_window.content_size();
+        tracing::debug!(
+            target: "gpui::window",
+            viewport_size = ?self.viewport_size,
+            scale_factor = self.scale_factor,
+            "bounds_changed"
+        );
         self.display_id = self.platform_window.display().map(|display| display.id());
         self.layout_cache.clear();
         if let Some(layout_engine) = self.layout_engine.as_mut() {
@@ -2722,9 +2728,28 @@ impl Window {
             }
         };
 
+        tracing::debug!(
+            target: "gpui::window",
+            viewport_size = ?self.viewport_size,
+            root_size = ?root_size,
+            frame_number = self.frame_number,
+            root_present = self.root.is_some(),
+            dirty_views = self.dirty_views.len(),
+            dirty_descendants = self.dirty_descendants.len(),
+            "draw_roots prepaint start"
+        );
+
         // Layout all root elements.
         let mut root_element = self.root.as_ref().unwrap().clone().into_any();
         root_element.prepaint_as_root(Point::default(), root_size.into(), self, cx);
+        tracing::debug!(
+            target: "gpui::window",
+            viewport_size = ?self.viewport_size,
+            root_size = ?root_size,
+            next_frame_elements = self.next_frame.dispatch_tree.len(),
+            next_frame_input_handlers = self.next_frame.input_handlers.len(),
+            "draw_roots prepaint root complete"
+        );
 
         #[cfg(any(feature = "inspector", debug_assertions))]
         let inspector_element = self.prepaint_inspector(_inspector_width, cx);
@@ -2761,6 +2786,14 @@ impl Window {
         self.paint_inspector(inspector_element, cx);
 
         self.paint_deferred_draws(cx);
+
+        tracing::debug!(
+            target: "gpui::window",
+            viewport_size = ?self.viewport_size,
+            scene_damage = self.next_frame.scene.damage_rects().len(),
+            scene_damage_area = self.next_frame.scene.damage_area(),
+            "draw_roots paint complete"
+        );
 
         if let Some(mut prompt_element) = prompt_element {
             prompt_element.paint(self, cx);

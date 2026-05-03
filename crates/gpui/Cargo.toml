@@ -99,6 +99,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread"] }
 gpui_util.workspace = true
 util.workspace = true
+tracing = "0.1"
 hdrhistogram = { workspace = true, optional = true }
 url.workspace = true
 usvg = { version = "0.45.0", default-features = false }

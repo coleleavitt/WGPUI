@@ -319,8 +319,26 @@ impl Scene {
     }
 
     pub fn finish(&mut self) {
+        let dirty_before = self.dirty_chunk_count();
+        let chunks_before = self.chunks.len();
         self.finish_incremental();
         self.compute_damage_rects();
+        tracing::debug!(
+            target: "gpui::scene",
+            chunks_before,
+            dirty_before,
+            chunks_after = self.chunks.len(),
+            damage_rects = self.damage_rects.len(),
+            damage_area = self.damage_area(),
+            shadows = self.shadows.len(),
+            quads = self.quads.len(),
+            paths = self.paths.len(),
+            underlines = self.underlines.len(),
+            monochrome_sprites = self.monochrome_sprites.len(),
+            polychrome_sprites = self.polychrome_sprites.len(),
+            surfaces = self.surfaces.len(),
+            "scene finished"
+        );
         for chunk in &mut self.chunks {
             chunk.dirty = false;
         }
