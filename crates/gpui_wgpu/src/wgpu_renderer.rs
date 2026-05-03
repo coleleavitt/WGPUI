@@ -139,6 +139,8 @@ struct WgpuResources {
     path_intermediate_view: Option<wgpu::TextureView>,
     path_msaa_texture: Option<wgpu::Texture>,
     path_msaa_view: Option<wgpu::TextureView>,
+    frame_texture: Option<wgpu::Texture>,
+    frame_view: Option<wgpu::TextureView>,
 }
 
 struct PersistentTypeBuffer {
@@ -395,6 +397,8 @@ impl WgpuResources {
         self.path_intermediate_view = None;
         self.path_msaa_texture = None;
         self.path_msaa_view = None;
+        self.frame_texture = None;
+        self.frame_view = None;
     }
 }
 
@@ -426,6 +430,7 @@ pub struct WgpuRenderer {
     surface_configured: bool,
     needs_redraw: bool,
     has_drawn_frame: bool,
+    surface_copy_supported: bool,
     last_frame_stats: Option<GpuFrameStats>,
     persistent_buffers: PersistentBuffers,
     supports_multi_draw_indirect: bool,
@@ -602,8 +607,14 @@ impl WgpuRenderer {
             );
         }
 
+        let surface_copy_supported = surface_caps.usages.contains(wgpu::TextureUsages::COPY_DST);
+        let mut surface_usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+        if surface_copy_supported {
+            surface_usage |= wgpu::TextureUsages::COPY_DST;
+        }
+
         let surface_config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: surface_usage,
             format: surface_format,
             width: clamped_width.max(1),
             height: clamped_height.max(1),
@@ -743,6 +754,8 @@ impl WgpuRenderer {
             path_intermediate_view: None,
             path_msaa_texture: None,
             path_msaa_view: None,
+            frame_texture: None,
+            frame_view: None,
         };
         let persistent_buffers = PersistentBuffers::new(&context.device);
         let indirect_buffer = supports_multi_draw_indirect.then(|| {
@@ -778,6 +791,7 @@ impl WgpuRenderer {
             surface_configured: true,
             needs_redraw: false,
             has_drawn_frame: false,
+            surface_copy_supported,
             last_frame_stats: None,
             persistent_buffers,
             supports_multi_draw_indirect,
@@ -1198,6 +1212,30 @@ impl WgpuRenderer {
         (texture, view)
     }
 
+    fn create_frame_texture(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        width: u32,
+        height: u32,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("persistent_frame_texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
+    }
+
     fn create_msaa_if_needed(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
@@ -1272,6 +1310,9 @@ impl WgpuRenderer {
             if let Some(ref texture) = resources.path_msaa_texture {
                 texture.destroy();
             }
+            if let Some(ref texture) = resources.frame_texture {
+                texture.destroy();
+            }
 
             resources
                 .surface
@@ -1292,7 +1333,9 @@ impl WgpuRenderer {
     }
 
     fn ensure_intermediate_textures(&mut self) {
-        if self.resources().path_intermediate_texture.is_some() {
+        if self.resources().path_intermediate_texture.is_some()
+            && self.resources().frame_texture.is_some()
+        {
             return;
         }
 
@@ -1302,21 +1345,31 @@ impl WgpuRenderer {
         let path_sample_count = self.rendering_params.path_sample_count;
         let resources = self.resources_mut();
 
-        let (t, v) = Self::create_path_intermediate(&resources.device, format, width, height);
-        resources.path_intermediate_texture = Some(t);
-        resources.path_intermediate_view = Some(v);
+        if resources.path_intermediate_texture.is_none() {
+            let (t, v) = Self::create_path_intermediate(&resources.device, format, width, height);
+            resources.path_intermediate_texture = Some(t);
+            resources.path_intermediate_view = Some(v);
+        }
 
-        let (path_msaa_texture, path_msaa_view) = Self::create_msaa_if_needed(
-            &resources.device,
-            format,
-            width,
-            height,
-            path_sample_count,
-        )
-        .map(|(t, v)| (Some(t), Some(v)))
-        .unwrap_or((None, None));
-        resources.path_msaa_texture = path_msaa_texture;
-        resources.path_msaa_view = path_msaa_view;
+        if resources.frame_texture.is_none() {
+            let (t, v) = Self::create_frame_texture(&resources.device, format, width, height);
+            resources.frame_texture = Some(t);
+            resources.frame_view = Some(v);
+        }
+
+        if resources.path_msaa_texture.is_none() && path_sample_count > 1 {
+            let (path_msaa_texture, path_msaa_view) = Self::create_msaa_if_needed(
+                &resources.device,
+                format,
+                width,
+                height,
+                path_sample_count,
+            )
+            .map(|(t, v)| (Some(t), Some(v)))
+            .unwrap_or((None, None));
+            resources.path_msaa_texture = path_msaa_texture;
+            resources.path_msaa_view = path_msaa_view;
+        }
     }
 
     pub fn set_subpixel_layout(&mut self, is_bgr: bool) {
@@ -1494,7 +1547,7 @@ impl WgpuRenderer {
         }
 
         let scene_full_redraw = scene.full_redraw_needed(viewport_bounds);
-        let partial_redraw_enabled = false;
+        let partial_redraw_enabled = self.surface_copy_supported;
         let full_redraw = !partial_redraw_enabled || !self.has_drawn_frame || scene_full_redraw;
         tracing::debug!(
             target: "wgpu::renderer",
@@ -1582,6 +1635,7 @@ impl WgpuRenderer {
         let frame_view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        let render_to_offscreen = self.surface_copy_supported;
 
         let gamma_params = GammaParams {
             gamma_ratios: self.rendering_params.gamma_ratios,
@@ -1791,10 +1845,18 @@ impl WgpuRenderer {
                 } else {
                     wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
                 };
+                let target_view = if render_to_offscreen {
+                    self.resources()
+                        .frame_view
+                        .as_ref()
+                        .expect("frame texture should exist")
+                } else {
+                    &frame_view
+                };
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("main_pass"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &frame_view,
+                        view: target_view,
                         resolve_target: None,
                         ops: wgpu::Operations {
                             load,
@@ -1839,10 +1901,19 @@ impl WgpuRenderer {
                                 &mut draw_call_count,
                             );
 
+                            let target_view = if render_to_offscreen {
+                                self.resources()
+                                    .frame_view
+                                    .as_ref()
+                                    .expect("frame texture should exist")
+                            } else {
+                                &frame_view
+                            };
+
                             pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                                 label: Some("main_pass_continued"),
                                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                                    view: &frame_view,
+                                    view: target_view,
                                     resolve_target: None,
                                     ops: wgpu::Operations {
                                         load: wgpu::LoadOp::Load,
@@ -1939,6 +2010,33 @@ impl WgpuRenderer {
                 }
                 self.grow_instance_buffer();
                 continue;
+            }
+
+            if render_to_offscreen {
+                let resources = self.resources();
+                let frame_texture = resources
+                    .frame_texture
+                    .as_ref()
+                    .expect("frame texture should exist");
+                encoder.copy_texture_to_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: frame_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &frame.texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    wgpu::Extent3d {
+                        width: self.surface_config.width,
+                        height: self.surface_config.height,
+                        depth_or_array_layers: 1,
+                    },
+                );
             }
 
             self.resources()
