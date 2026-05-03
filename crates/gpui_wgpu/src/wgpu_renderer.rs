@@ -1552,7 +1552,7 @@ impl WgpuRenderer {
         }
 
         let scene_full_redraw = scene.full_redraw_needed(viewport_bounds);
-        let partial_redraw_enabled = self.surface_copy_supported;
+        let partial_redraw_enabled = false;
         let full_redraw = !partial_redraw_enabled || !self.has_drawn_frame || scene_full_redraw;
         tracing::debug!(
             target: "wgpu::renderer",
