@@ -1489,9 +1489,14 @@ impl PlatformWindow for WaylandWindow {
     fn completed_frame(&self) {
         let state = self.borrow();
 
+        // Always commit — the compositor needs surface.commit() to present any
+        // pending buffer, even when the renderer skipped drawing (damage_rects=0).
+        // Only emit damage_buffer hints when we have actual dirty regions; omitting
+        // them on a skip-frame is fine (compositor will use its own damage tracking).
         match state.renderer.last_damage_rects() {
             Some(rects) if rects.is_empty() => {
-                return;
+                // Draw was skipped (no scene damage), but we still must commit so
+                // the compositor doesn't stall waiting for acknowledgement.
             }
             Some(rects) => {
                 for [x, y, w, h] in rects {
