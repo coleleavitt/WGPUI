@@ -1,0 +1,526 @@
+# Instincts generated from https://github.com/coleleavitt/WGPUI
+# Generated: 2026-07-17T18:14:27.495Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: WGPUI-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/coleleavitt/WGPUI
+---
+
+# WGPUI Commit Length
+
+## Action
+
+Keep commit messages concise (~40 characters)
+
+## Evidence
+
+- Average commit message length: 40 chars
+- Based on 60 commits
+
+---
+id: WGPUI-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/coleleavitt/WGPUI
+---
+
+# WGPUI Naming Files
+
+## Action
+
+Use snake_case naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: snake_case
+
+---
+id: WGPUI-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/coleleavitt/WGPUI
+---
+
+# WGPUI Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: WGPUI-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/coleleavitt/WGPUI
+---
+
+# WGPUI Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: WGPUI-test-separate
+trigger: "when writing tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/coleleavitt/WGPUI
+---
+
+# WGPUI Test Separate
+
+## Action
+
+Place tests in the tests/ or __tests__/ directory, mirroring src structure
+
+## Evidence
+
+- Separate test directory pattern detected
+- Tests live in dedicated test folders
+
+---
+id: WGPUI-workflow-feature-development
+trigger: "when implementing a new feature"
+confidence: 0.8
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/coleleavitt/WGPUI
+---
+
+# WGPUI Workflow Feature Development
+
+## Action
+
+Follow the feature-development workflow:
+1. Add feature implementation
+2. Add tests for feature
+3. Update documentation
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~6x per month
+- Files: 
+
+---
+id: WGPUI-workflow-feature-development-with-examples-and-core
+trigger: "when doing feature development with examples and core"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/coleleavitt/WGPUI
+---
+
+# WGPUI Workflow Feature Development With Examples And Core
+
+## Action
+
+Follow the feature-development-with-examples-and-core workflow:
+1. Update or add core logic in src/ (e.g., src/platform/cross/renderer.rs, src/style.rs, src/text_system.rs)
+2. Update or add trait or API surface (e.g., src/styled.rs, src/elements/*.rs)
+3. Update or add example/demo in examples/ (e.g., examples/learn/blur_showcase.rs, examples/learn/text.rs, examples/prelude.rs)
+4. Update Cargo.toml and/or Cargo.lock if dependencies or features are added
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: src/platform/cross/renderer.rs, src/style.rs, src/text_system.rs
+
+---
+id: WGPUI-workflow-demo-iteration-in-examples
+trigger: "when doing demo iteration in examples"
+confidence: 0.6
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/coleleavitt/WGPUI
+---
+
+# WGPUI Workflow Demo Iteration In Examples
+
+## Action
+
+Follow the demo-iteration-in-examples workflow:
+1. Edit the relevant example file in examples/ (e.g., examples/learn/blur_showcase.rs)
+2. Commit changes, often repeatedly in a short time span
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~2x per month
+- Files: examples/learn/blur_showcase.rs, examples/learn/text.rs, examples/legacy/input.rs
+
+---
+id: WGPUI-workflow-inspector-or-large-feature-overhaul
+trigger: "when doing inspector or large feature overhaul"
+confidence: 0.55
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/coleleavitt/WGPUI
+---
+
+# WGPUI Workflow Inspector Or Large Feature Overhaul
+
+## Action
+
+Follow the inspector-or-large-feature-overhaul workflow:
+1. Edit core files for the subsystem (e.g., src/inspector.rs, src/window.rs, src/element.rs)
+2. Commit multiple times, often with messages like 'Update X.rs'
+3. Merge the feature branch into main
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~1x per month
+- Files: src/inspector.rs, src/window.rs, src/element.rs
+
+---
+id: WGPUI-workflow-event-or-action-dispatch-infrastructure-update
+trigger: "when doing event or action dispatch infrastructure update"
+confidence: 0.55
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/coleleavitt/WGPUI
+---
+
+# WGPUI Workflow Event Or Action Dispatch Infrastructure Update
+
+## Action
+
+Follow the event-or-action-dispatch-infrastructure-update workflow:
+1. Edit src/window.rs and related dispatch files (src/key_dispatch.rs, src/action.rs, src/app/context.rs)
+2. Commit sequential changes to these files to refine the dispatch logic
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~1x per month
+- Files: src/window.rs, src/key_dispatch.rs, src/action.rs
+
+---
+id: WGPUI-workflow-merge-feature-branch-into-main
+trigger: "when doing merge feature branch into main"
+confidence: 0.55
+domain: workflow
+source: repo-analysis
+source_repo: https://github.com/coleleavitt/WGPUI
+---
+
+# WGPUI Workflow Merge Feature Branch Into Main
+
+## Action
+
+Follow the merge-feature-branch-into-main workflow:
+1. Merge the feature branch (e.g., blur-overhaul, inspector overhaul) into main
+2. Resolve conflicts and include all related file changes
+
+## Evidence
+
+- Workflow detected from commit patterns
+- Frequency: ~1x per month
+- Files: various files across src/ and examples/
+
+---
+id: wgpui-coding-file-naming
+trigger: "When creating or renaming a file"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: coleleavitt/WGPUI
+---
+
+# Wgpui Coding File Naming
+
+## Action
+
+Use snake_case for file names
+
+## Evidence
+
+- Pattern in src/app, src/elements, src/platform, src/text_system
+
+---
+id: wgpui-coding-function-naming
+trigger: "When defining a function"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: coleleavitt/WGPUI
+---
+
+# Wgpui Coding Function Naming
+
+## Action
+
+Use camelCase for function names
+
+## Evidence
+
+- Pattern in src/ and examples/
+- Rust convention, seen in codebase
+
+---
+id: wgpui-coding-class-naming
+trigger: "When defining a struct or enum (class-like type)"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: coleleavitt/WGPUI
+---
+
+# Wgpui Coding Class Naming
+
+## Action
+
+Use PascalCase for type names
+
+## Evidence
+
+- Pattern in src/
+- Rust convention, seen in codebase
+
+---
+id: wgpui-coding-constant-naming
+trigger: "When defining a constant"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: coleleavitt/WGPUI
+---
+
+# Wgpui Coding Constant Naming
+
+## Action
+
+Use SCREAMING_SNAKE_CASE for constant names
+
+## Evidence
+
+- Pattern in src/
+- Rust convention, seen in codebase
+
+---
+id: wgpui-coding-import-style
+trigger: "When importing modules"
+confidence: 0.85
+domain: code-style
+source: repo-analysis
+source_repo: coleleavitt/WGPUI
+---
+
+# Wgpui Coding Import Style
+
+## Action
+
+Use relative imports
+
+## Evidence
+
+- Pattern in src/
+- Mentioned in codeStyle.importStyle
+
+---
+id: wgpui-coding-export-style
+trigger: "When exporting items from a module"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: coleleavitt/WGPUI
+---
+
+# Wgpui Coding Export Style
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in src/
+- Mentioned in codeStyle.exportStyle
+
+---
+id: wgpui-testing-location
+trigger: "When adding or updating tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: coleleavitt/WGPUI
+---
+
+# Wgpui Testing Location
+
+## Action
+
+Place tests in a separate location from src/
+
+## Evidence
+
+- architecture.testLocation is 'separate'
+
+---
+id: wgpui-git-commit-format
+trigger: "When writing a commit message"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: coleleavitt/WGPUI
+---
+
+# Wgpui Git Commit Format
+
+## Action
+
+Use short, descriptive, freeform messages without a prefix
+
+## Evidence
+
+- Seen in commits: 'Add backdrop-filter groups and ordering support', 'Update blur_showcase.rs', 'implement base for letter-spacing'
+
+---
+id: wgpui-git-commit-length
+trigger: "When writing a commit message"
+confidence: 0.8
+domain: git
+source: repo-analysis
+source_repo: coleleavitt/WGPUI
+---
+
+# Wgpui Git Commit Length
+
+## Action
+
+Keep commit messages concise (around 40 characters on average)
+
+## Evidence
+
+- commits.averageLength is 40
+
+---
+id: wgpui-workflow-feature-with-demo
+trigger: "When adding a new rendering or style feature and demonstrating it"
+confidence: 0.95
+domain: workflow
+source: repo-analysis
+source_repo: coleleavitt/WGPUI
+---
+
+# Wgpui Workflow Feature With Demo
+
+## Action
+
+Update core logic in src/, update traits/APIs, add or update example/demo in examples/, and update Cargo.toml/Cargo.lock if needed
+
+## Evidence
+
+- Workflow: feature-development-with-examples-and-core
+- Seen in commits: 'Add backdrop-filter groups and ordering support', 'Add glass, content, and nested blur demos'
+- Files: src/platform/cross/renderer.rs, src/style.rs, src/text_system.rs, examples/learn/blur_showcase.rs, Cargo.toml
+
+---
+id: wgpui-workflow-demo-iteration
+trigger: "When refining or debugging a UI demo or example"
+confidence: 0.9
+domain: workflow
+source: repo-analysis
+source_repo: coleleavitt/WGPUI
+---
+
+# Wgpui Workflow Demo Iteration
+
+## Action
+
+Edit the relevant example file in examples/ and commit changes repeatedly in a short time span
+
+## Evidence
+
+- Workflow: demo-iteration-in-examples
+- Seen in commits: 'Update blur_showcase.rs'
+- Files: examples/learn/blur_showcase.rs, examples/learn/text.rs
+
+---
+id: wgpui-workflow-feature-overhaul
+trigger: "When overhauling a feature or subsystem (e.g., inspector) with incremental changes before merging"
+confidence: 0.85
+domain: workflow
+source: repo-analysis
+source_repo: coleleavitt/WGPUI
+---
+
+# Wgpui Workflow Feature Overhaul
+
+## Action
+
+Edit core files for the subsystem, commit multiple times (often with 'Update X.rs'), then merge the feature branch into main
+
+## Evidence
+
+- Workflow: inspector-or-large-feature-overhaul
+- Files: src/inspector.rs, src/window.rs, src/element.rs
+
+---
+id: wgpui-workflow-dispatch-update
+trigger: "When changing how events or actions are dispatched"
+confidence: 0.85
+domain: workflow
+source: repo-analysis
+source_repo: coleleavitt/WGPUI
+---
+
+# Wgpui Workflow Dispatch Update
+
+## Action
+
+Edit src/window.rs and related dispatch files, commit sequential changes to refine dispatch logic
+
+## Evidence
+
+- Workflow: event-or-action-dispatch-infrastructure-update
+- Files: src/window.rs, src/key_dispatch.rs, src/action.rs, src/app/context.rs
+
+---
+id: wgpui-workflow-merge-feature
+trigger: "When a feature branch is ready to be integrated into main"
+confidence: 0.8
+domain: workflow
+source: repo-analysis
+source_repo: coleleavitt/WGPUI
+---
+
+# Wgpui Workflow Merge Feature
+
+## Action
+
+Merge the feature branch into main, resolve conflicts, and include all related file changes
+
+## Evidence
+
+- Workflow: merge-feature-branch-into-main
+- Pattern: merges after sequential related commits
+
